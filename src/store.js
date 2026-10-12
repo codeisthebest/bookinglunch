@@ -11,10 +11,14 @@ function emptyDb() {
     config: {
       orderCutoff: '10:00', // 每日統一截止時間（暫定，後台可改）
       subsidy: 33, // 公司補貼金額（元）
+      employeeIdLength: 6, // 純數字員編補零到幾碼（0 = 不補）；避免 Excel 吃掉前導零
+      allowManualPickup: true, // 取餐口是否允許手動輸入員編（未經動態碼驗證的後備方式）
+      specialLeadDays: 3, // ★ 特殊商品須提前幾天訂購
     },
     employees: {}, // { [employeeId]: { id, name, dept, verify? } }
     bindings: {}, // { [lineUserId]: { employeeId, displayName, boundAt } }
     admins: {}, // { [username]: { username, displayName, role, active, salt, hash, createdAt } }
+    kiosks: {}, // { [deviceId]: { id, name, active, salt, hash, createdAt, lastSeen } }
     menus: {}, // { [date]: [{ id, meal, name, price }] }
     orders: [], // 見 service.js createOrder
     exemptions: {}, // { [date]: { [employeeId]: reason } }
@@ -29,6 +33,8 @@ function createStore(file = process.env.DATA_FILE || DEFAULT_FILE) {
     db = JSON.parse(fs.readFileSync(file, 'utf8'));
     db.bindings = db.bindings || {}; // 舊版資料檔沒有這些欄位
     db.admins = db.admins || {};
+    db.kiosks = db.kiosks || {};
+    db.config = { ...emptyDb().config, ...db.config }; // 舊資料檔補上新增的設定預設值
   } else {
     db = emptyDb();
   }

@@ -41,6 +41,13 @@ test('完整流程：匯入、上架、訂餐、委託、取餐、未取餐報�
     assert.equal((await call('GET', '/api/admin/employees')).status, 401, '未登入不可讀取名單');
 
     await call('PUT', '/api/admin/clock', { token: admin, body: { now: `${DAY}T08:00` } });
+
+    // 取餐口：未登入不可呼叫；建立裝置並登入
+    assert.equal((await call('POST', '/api/pickup/lookup', { body: { code: 'E001' } })).status, 401);
+    const created = await call('POST', '/api/admin/kiosks', { token: admin, body: { id: 'kiosk-t1', name: '測試' } });
+    assert.equal(created.status, 201);
+    const kioskLogin = await call('POST', '/api/kiosk/login', { body: { deviceId: 'KIOSK-T1', key: created.json.key } });
+    const kiosk = kioskLogin.json.token;
     const imp = await call('POST', '/api/admin/employees/import', {
       token: admin,
       body: { csv: '員工編號,姓名,部門\nE001,甲,行政\nE002,乙,研發\nE003,丙,業務' },
@@ -82,13 +89,15 @@ test('完整流程：匯入、上架、訂餐、委託、取餐、未取餐報�
 
     // 取餐口：委託碼 → 要求輸入員編；錯誤員編被拒絕；正確員編放行
     setClock(`${DAY}T12:00`);
-    const lookup = await call('POST', '/api/pickup/lookup', { body: { code: `DLG:${code}` } });
+    const lookup = await call('POST', '/api/pickup/lookup', { token: kiosk, body: { code: `DLG:${code}` } });
     assert.equal(lookup.json.status, 'need_employee_id');
-    const wrong = await call('POST', '/api/pickup/confirm', { body: { code, employeeId: 'E003' } });
+    const wrong = await call('POST', '/api/pickup/confirm', { token: kiosk, body: { code, employeeId: 'E003' } });
     assert.equal(wrong.status, 403);
     assert.equal(wrong.json.error, '此委託取餐僅開放給指定同事，員工編號不符，拒絕放行');
-    const ok = await call('POST', '/api/pickup/confirm', { body: { code, employeeId: 'E002' } });
+    const ok = await call('POST', '/api/pickup/confirm', { token: kiosk, body: { code, employeeId: 'E002' } });
     assert.equal(ok.json.status, 'picked');
+    assert.equal(ok.json.pickedVia, 'delegate');
+    assert.equal(ok.json.pickedKiosk, 'KIOSK-T1');
 
     // 另一位訂了沒領 → 13:01 之後出現在扣款清單與 CSV
     setClock(`${DAY}T08:30`);

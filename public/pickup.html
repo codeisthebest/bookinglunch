@@ -15,23 +15,39 @@
 <body>
   <header class="top">
     <h1>取餐口</h1>
-    <div id="clock" class="muted"></div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <div id="clock" class="muted"></div>
+      <button id="kioskLogout" class="hidden">裝置登出</button>
+    </div>
   </header>
 
   <main>
-    <div id="state" class="notice info"></div>
-
-    <section class="card" id="scanCard">
-      <label for="scanInput">掃描員工 QR Code，或輸入員工編號／委託碼</label>
-      <input id="scanInput" autocomplete="off" autofocus placeholder="等待掃描…">
-      <div style="display:flex;gap:8px;margin-top:10px">
-        <button id="lookupBtn" class="primary" style="flex:1">查詢</button>
-        <button id="cameraBtn" class="hidden">📷 相機掃碼</button>
-      </div>
-      <video id="video" class="hidden" playsinline muted style="margin-top:10px"></video>
+    <!-- 共用平板不走個人帳號，用裝置編號＋裝置金鑰登入；金鑰由後台「系統設定」建立 -->
+    <section id="kioskLogin" class="card hidden">
+      <h2>取餐口裝置登入</h2>
+      <p class="muted">請輸入後台建立的裝置編號與裝置金鑰。登入後這台平板會記住裝置，下次自動上線。</p>
+      <div class="field"><label for="deviceId">裝置編號</label><input id="deviceId" autocomplete="off" placeholder="例如 KIOSK-01"></div>
+      <div class="field"><label for="deviceKey">裝置金鑰</label><input id="deviceKey" type="password" autocomplete="off"></div>
+      <button id="kioskLoginBtn" class="primary" style="width:100%">裝置登入</button>
+      <div id="kioskLoginMsg" class="notice danger hidden" style="margin-top:12px"></div>
     </section>
 
-    <section id="result" class="hidden"></section>
+    <div id="kioskApp" class="hidden">
+      <div id="state" class="notice info"></div>
+
+      <section class="card" id="scanCard">
+        <label for="scanInput">請掃描手機上的動態 QR Code</label>
+        <input id="scanInput" autocomplete="off" autofocus placeholder="等待掃描…">
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button id="lookupBtn" class="primary" style="flex:1">查詢</button>
+          <button id="cameraBtn" class="hidden">📷 相機掃碼</button>
+        </div>
+        <p class="muted" style="margin:10px 0 0">USB 條碼槍會自動輸入並送出。忘了帶手機時，可輸入員工編號（後備方式，系統會標記為「未經動態碼驗證」）。</p>
+        <video id="video" class="hidden" playsinline muted style="margin-top:10px"></video>
+      </section>
+
+      <section id="result" class="hidden"></section>
+    </div>
   </main>
 
   <script src="assets/common.js"></script>

@@ -7,7 +7,8 @@ const PERMISSIONS = {
   'menu.edit': '維護每日菜單',
   'deduction.manage': '處理扣款狀態與例外名單',
   'employees.manage': '員工名單匯入與 LINE 綁定管理',
-  'config.edit': '系統設定（截止時間、補貼、模擬時間）',
+  'config.edit': '系統設定（截止時間、補貼、員編位數、手動取餐開關、模擬時間）',
+  'kiosks.manage': '取餐口裝置管理',
   'admins.manage': '管理員帳號與操作紀錄',
 };
 

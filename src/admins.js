@@ -174,4 +174,4 @@ function createAdminService(store) {
   };
 }
 
-module.exports = { createAdminService, MIN_PASSWORD_LENGTH };
+module.exports = { createAdminService, MIN_PASSWORD_LENGTH, hashPassword, verifyPassword };

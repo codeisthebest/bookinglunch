@@ -4,6 +4,7 @@
 const crypto = require('node:crypto');
 const { MEAL_DEADLINES, taipeiNow, isValidDate, isValidTime } = require('./time');
 const { parseCsv } = require('./csv');
+const { createTokenService } = require('./pickup-token');
 
 const MEAL_LABEL = { lunch: '午餐', dinner: '晚餐' };
 const DELEGATE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // 去掉容易混淆的 0/O/1/I/L
@@ -11,7 +12,15 @@ const DELEGATE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // 去掉容易混�
 const MSG = {
   DELEGATE_MISMATCH: '此委託取餐僅開放給指定同事，員工編號不符，拒絕放行',
   NOT_OWNER: '此訂單不屬於該員工編號，拒絕放行',
+  MANUAL_DISABLED: '已停用手動輸入員編，請出示動態取餐碼',
 };
+
+const PICK_VIA_LABEL = { token: '動態碼', manual: '手動輸入（未驗證）', delegate: '委託代領' };
+
+// 兩個 YYYY-MM-DD 之間相差幾天（b − a）
+function daysBetween(a, b) {
+  return Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400000);
+}
 
 class AppError extends Error {
   constructor(status, message) {
@@ -20,7 +29,17 @@ class AppError extends Error {
   }
 }
 
-function createService(store) {
+function createService(store, { tokens } = {}) {
+  const tokenService = tokens || createTokenService();
+
+  // 員編正規化：去空白、轉大寫；純數字且位數不足時補零（Excel 轉 CSV 常把 012003 吃成 12003）
+  function normalizeEmployeeId(raw) {
+    let id = String(raw === undefined || raw === null ? '' : raw).trim().toUpperCase();
+    const length = store.db.config.employeeIdLength;
+    if (length > 0 && /^\d+$/.test(id) && id.length < length) id = id.padStart(length, '0');
+    return id;
+  }
+
   function log(action, detail) {
     store.db.history.push({ at: new Date().toISOString(), action, detail });
     if (store.db.history.length > 2000) store.db.history.splice(0, 500);
@@ -79,6 +98,19 @@ function createService(store) {
       if (!Number.isInteger(n) || n < 0) throw new AppError(400, '補貼金額需為非負整數');
       store.db.config.subsidy = n;
     }
+    if (patch.employeeIdLength !== undefined) {
+      const n = Number(patch.employeeIdLength);
+      if (!Number.isInteger(n) || n < 0 || n > 12) throw new AppError(400, '員編位數需為 0–12 的整數（0 表示不補零）');
+      store.db.config.employeeIdLength = n;
+    }
+    if (patch.allowManualPickup !== undefined) {
+      store.db.config.allowManualPickup = Boolean(patch.allowManualPickup);
+    }
+    if (patch.specialLeadDays !== undefined) {
+      const n = Number(patch.specialLeadDays);
+      if (!Number.isInteger(n) || n < 0 || n > 30) throw new AppError(400, '特殊商品提前天數需為 0–30 的整數');
+      store.db.config.specialLeadDays = n;
+    }
     store.save();
     log('config.update', patch);
     return getConfig();
@@ -90,6 +122,8 @@ function createService(store) {
     id: ['員工編號', '員編', 'employee_id', 'employeeid', 'id'],
     name: ['姓名', 'name'],
     dept: ['部門', 'dept', 'department'],
+    deptCode: ['部門代號', '部門代碼', 'dept_code', 'deptcode'],
+    deptName: ['部門名稱', 'dept_name', 'deptname'],
     verify: ['驗證碼', 'verify', 'verification', 'verify_code'],
   };
 
@@ -107,6 +141,8 @@ function createService(store) {
       id: findColumn(headers, 'id'),
       name: findColumn(headers, 'name'),
       dept: findColumn(headers, 'dept'),
+      deptCode: findColumn(headers, 'deptCode'),
+      deptName: findColumn(headers, 'deptName'),
       verify: findColumn(headers, 'verify'),
     };
     if (cols.id === undefined || cols.name === undefined) {
@@ -115,17 +151,22 @@ function createService(store) {
 
     let created = 0;
     let updated = 0;
+    let padded = 0;
     const errors = [];
     rows.slice(1).forEach((row, index) => {
       const line = index + 2;
-      const id = (row[cols.id] || '').trim();
+      const rawId = (row[cols.id] || '').trim();
+      const id = normalizeEmployeeId(rawId);
       const name = (row[cols.name] || '').trim();
-      const dept = cols.dept === undefined ? '' : (row[cols.dept] || '').trim();
+      // 部門可以是單一「部門」欄，或公司匯出的「部門代號」＋「部門名稱」兩欄
+      const cell = (i) => (i === undefined ? '' : (row[i] || '').trim());
+      const dept = cell(cols.dept) || `${cell(cols.deptCode)} ${cell(cols.deptName)}`.trim();
       const verify = cols.verify === undefined ? '' : (row[cols.verify] || '').trim();
       if (!id || !name) {
         errors.push({ line, message: '員工編號或姓名為空' });
         return;
       }
+      if (id !== rawId.toUpperCase()) padded += 1;
       if (store.db.employees[id]) {
         updated += 1;
       } else {
@@ -137,8 +178,8 @@ function createService(store) {
     });
 
     store.save();
-    log('employees.import', { created, updated, errors: errors.length });
-    return { created, updated, errors, total: Object.keys(store.db.employees).length };
+    log('employees.import', { created, updated, padded, errors: errors.length });
+    return { created, updated, padded, errors, total: Object.keys(store.db.employees).length };
   }
 
   function boundEmployeeIds() {
@@ -160,7 +201,7 @@ function createService(store) {
   }
 
   function getEmployee(id) {
-    return publicEmployee(store.db.employees[id]);
+    return publicEmployee(store.db.employees[normalizeEmployeeId(id)]);
   }
 
   // ---------- LINE 帳號綁定 ----------
@@ -181,7 +222,7 @@ function createService(store) {
       throw new AppError(429, '嘗試次數過多，請 15 分鐘後再試，或洽行政人員協助');
     }
 
-    const id = String(employeeId || '').trim();
+    const id = normalizeEmployeeId(employeeId);
     const record = store.db.employees[id];
     const nameOk = record && String(name || '').trim() === record.name;
     const verifyOk = record && (!record.verify || String(verification || '').trim() === record.verify);
@@ -260,10 +301,22 @@ function createService(store) {
       const meal = raw.meal;
       const name = String(raw.name || '').trim();
       const price = Number(raw.price);
+      const sides = (Array.isArray(raw.sides) ? raw.sides : String(raw.sides || '').split(/[、,，]/))
+        .map((x) => String(x).trim())
+        .filter(Boolean);
       if (!MEAL_LABEL[meal]) throw new AppError(400, `第 ${index + 1} 項：餐別需為 lunch 或 dinner`);
       if (!name) throw new AppError(400, `第 ${index + 1} 項：品名不可為空`);
       if (!Number.isInteger(price) || price <= 0) throw new AppError(400, `第 ${index + 1} 項：價格需為正整數`);
-      return { id: raw.id || store.nextId('M'), meal, name, price };
+      return {
+        id: raw.id || store.nextId('M'),
+        meal,
+        name,
+        price,
+        main: String(raw.main || '').trim(),
+        sides,
+        veg: String(raw.veg || '').trim(),
+        special: Boolean(raw.special), // ★ 特殊商品：須提前 specialLeadDays 天訂購
+      };
     });
 
     store.db.menus[date] = normalized;
@@ -298,6 +351,8 @@ function createService(store) {
       amount: amountFor(order),
       employeeId: order.employeeId,
       employeeName: owner ? owner.name : '',
+      employeeDept: owner ? owner.dept : '',
+      special: Boolean(order.special),
       status: statusOf(order),
       changeable: order.status === 'booked' && orderingStatus(order.date).open,
       delegateId: order.delegateId,
@@ -305,6 +360,9 @@ function createService(store) {
       delegateCode: order.delegateId ? order.delegateCode : null,
       pickedBy: order.pickedBy,
       pickedAt: order.pickedAt,
+      pickedVia: order.pickedVia || null,
+      pickedViaLabel: order.pickedVia ? PICK_VIA_LABEL[order.pickedVia] : null,
+      pickedKiosk: order.pickedKiosk || null,
       deductionStatus: order.deductionStatus,
       createdAt: order.createdAt,
     };
@@ -364,7 +422,15 @@ function createService(store) {
       cutoff: store.db.config.orderCutoff,
       subsidy: store.db.config.subsidy,
       ordering: orderingStatus(day),
-      items: getMenu(day),
+      specialLeadDays: store.db.config.specialLeadDays,
+      items: getMenu(day).map((item) => {
+        const locked = item.special && daysBetween(today.date, day) < store.db.config.specialLeadDays;
+        return {
+          ...item,
+          orderable: !locked,
+          lockReason: locked ? `特殊商品須於用餐日前 ${store.db.config.specialLeadDays} 天訂購` : null,
+        };
+      }),
       availableDates,
       myOrders,
       delegatedToMe,
@@ -381,6 +447,10 @@ function createService(store) {
 
     const item = getMenu(day).find((i) => i.id === itemId);
     if (!item) throw new AppError(404, '該日菜單沒有此品項');
+    const leadDays = store.db.config.specialLeadDays;
+    if (item.special && daysBetween(taipeiNow().date, day) < leadDays) {
+      throw new AppError(409, `「${item.name}」為特殊商品，須於用餐日前 ${leadDays} 天完成訂購，已無法訂購`);
+    }
 
     const duplicate = activeOrders(
       (o) => o.date === day && o.employeeId === employeeId && o.meal === item.meal,
@@ -395,6 +465,7 @@ function createService(store) {
       itemId: item.id,
       itemName: item.name,
       price: item.price,
+      special: item.special,
       status: 'booked',
       delegateId: null,
       delegateCode: null,
@@ -436,9 +507,10 @@ function createService(store) {
     return orderView(order);
   }
 
-  function transferOrder(employeeId, orderId, toEmployeeId) {
+  function transferOrder(employeeId, orderId, rawToEmployeeId) {
     const order = assertOwnedOpenOrder(employeeId, orderId);
-    if (!toEmployeeId) throw new AppError(400, '請輸入受讓人員編');
+    if (!rawToEmployeeId) throw new AppError(400, '請輸入受讓人員編');
+    const toEmployeeId = normalizeEmployeeId(rawToEmployeeId);
     if (toEmployeeId === employeeId) throw new AppError(400, '不可轉讓給自己');
     requireEmployee(toEmployeeId);
 
@@ -454,9 +526,10 @@ function createService(store) {
     return orderView(order);
   }
 
-  function delegateOrder(employeeId, orderId, delegateId) {
+  function delegateOrder(employeeId, orderId, rawDelegateId) {
     const order = assertOwnedPendingOrder(employeeId, orderId);
-    if (!delegateId) throw new AppError(400, '請先指定代領人員編');
+    if (!rawDelegateId) throw new AppError(400, '請先指定代領人員編');
+    const delegateId = normalizeEmployeeId(rawDelegateId);
     if (delegateId === employeeId) throw new AppError(400, '不可指定自己為代領人');
     requireEmployee(delegateId);
 
@@ -481,67 +554,124 @@ function createService(store) {
     return String(raw || '').trim().toUpperCase();
   }
 
-  // 取餐口掃碼：委託碼（DLG:XXXXXX 或純代碼）優先比對；否則視為員工編號（EMP:xxx 或純員編）。
-  function pickupLookup(raw) {
+  function selfLookup(employeeId, { verified, kioskId }) {
+    const today = taipeiNow();
+    const employee = getEmployee(employeeId);
+    if (!employee) return { mode: 'self', status: 'not_found', verified, message: '查無此員工編號，無法取餐' };
+
+    const orders = activeOrders((o) => o.date === today.date && o.employeeId === employee.id).map(orderView);
+    const base = { mode: 'self', verified, employee, orders };
+    // 只有通過動態碼驗證才發取餐憑證；手動輸入沒有憑證，確認時會記錄為「未驗證」
+    if (verified) base.ticket = tokenService.issueTicket(employee.id, kioskId);
+    if (orders.length === 0) return { ...base, status: 'no_order', message: '今日未訂餐' };
+    return { ...base, status: 'ok', message: `${employee.name} 今日已訂餐` };
+  }
+
+  function delegateLookup(order) {
+    const view = orderView(order);
+    if (view.status === 'picked') return { mode: 'delegate', status: 'picked', order: view, message: '此餐已取餐' };
+    if (view.status !== 'booked') return { mode: 'delegate', status: view.status, order: view, message: '此訂單目前不可取餐' };
+    return {
+      mode: 'delegate',
+      status: 'need_employee_id',
+      order: view,
+      message: `委託取餐：${view.employeeName} 委託 ${view.delegateName} 代領，請代領人輸入自己的員工編號`,
+    };
+  }
+
+  // 取餐口掃碼或輸入。依內容分三種：
+  //   1. 動態取餐碼（P.員編.窗格.簽章）：驗證簽章與時效，通過才發取餐憑證
+  //   2. 員編（手動輸入、刷識別證、舊式 EMP:員編）：後備方式，可由設定停用，取餐會記錄為「未驗證」
+  //   3. 委託碼（DLG:代碼 或純代碼）：之後仍須代領人輸入自己的員編
+  function pickupLookup(raw, { kioskId } = {}) {
     const today = taipeiNow();
     const value = String(raw || '').trim();
     if (!value) throw new AppError(400, '請掃描或輸入取餐碼');
+
+    if (tokenService.looksLikeToken(value)) {
+      const result = tokenService.verify(value);
+      if (!result.ok) {
+        return {
+          mode: 'self',
+          status: 'invalid_token',
+          verified: false,
+          message: result.reason === 'expired'
+            ? 'QR Code 已逾時，請在手機畫面重新整理後再掃一次'
+            : 'QR Code 簽章驗證失敗，拒絕放行',
+        };
+      }
+      return selfLookup(result.employeeId, { verified: true, kioskId });
+    }
+
+    const hasDelegatePrefix = /^DLG:/i.test(value);
+    const asEmployeeId = value.replace(/^EMP:/i, '');
+    // 員編優先於委託碼，避免純數字員編撞到委託碼
+    if (!hasDelegatePrefix && getEmployee(asEmployeeId)) {
+      if (!store.db.config.allowManualPickup) {
+        return { mode: 'self', status: 'manual_disabled', verified: false, message: MSG.MANUAL_DISABLED };
+      }
+      return selfLookup(asEmployeeId, { verified: false, kioskId });
+    }
 
     const delegateCode = normalizeCode(value.replace(/^DLG:/i, ''));
     const delegated = activeOrders(
       (o) => o.date === today.date && o.delegateCode && o.delegateCode === delegateCode,
     )[0];
-    if (delegated) {
-      const view = orderView(delegated);
-      if (view.status === 'picked') return { mode: 'delegate', status: 'picked', order: view, message: '此餐已取餐' };
-      if (view.status !== 'booked') return { mode: 'delegate', status: view.status, order: view, message: '此訂單目前不可取餐' };
-      return {
-        mode: 'delegate',
-        status: 'need_employee_id',
-        order: view,
-        message: `委託取餐：${view.employeeName} 委託 ${view.delegateName} 代領，請代領人輸入自己的員工編號`,
-      };
-    }
+    if (delegated) return delegateLookup(delegated);
 
-    const employeeId = value.replace(/^EMP:/i, '').trim();
-    const employee = getEmployee(employeeId);
-    if (!employee) return { mode: 'self', status: 'not_found', message: '查無此員工編號，無法取餐' };
-
-    const orders = activeOrders((o) => o.date === today.date && o.employeeId === employeeId).map(orderView);
-    if (orders.length === 0) {
-      return { mode: 'self', status: 'no_order', employee, orders, message: '今日未訂餐' };
-    }
-    return { mode: 'self', status: 'ok', employee, orders, message: `${employee.name} 今日已訂餐` };
+    return { mode: 'self', status: 'not_found', verified: false, message: '查無此員工編號或委託碼，無法取餐' };
   }
 
-  function pickupConfirm({ orderId, code, employeeId }) {
+  // 確認取餐有三條路：
+  //   委託：{ code, employeeId }  代領人輸入自己的員編，必須等於指定代領人
+  //   動態碼：{ orderId, ticket }  憑證由 lookup 簽發，綁定員工與取餐口
+  //   手動：{ orderId, employeeId }  後備方式，記錄為未驗證
+  function pickupConfirm({ orderId, code, employeeId, ticket }, { kioskId } = {}) {
     const today = taipeiNow();
     let order;
+    let via;
+    let actor;
+
     if (code) {
       const delegateCode = normalizeCode(String(code).replace(/^DLG:/i, ''));
       order = activeOrders((o) => o.date === today.date && o.delegateCode === delegateCode)[0];
       if (!order) throw new AppError(404, '委託取餐碼無效或已失效');
+      if (!employeeId) throw new AppError(400, '請輸入員工編號');
+      actor = normalizeEmployeeId(employeeId);
+      via = 'delegate';
     } else {
       order = findOrder(orderId);
+      if (ticket) {
+        const result = tokenService.verifyTicket(ticket, kioskId);
+        if (!result.ok) throw new AppError(403, '取餐憑證無效或已逾時，請重新掃描動態取餐碼');
+        actor = result.employeeId;
+        via = 'token';
+      } else {
+        if (!store.db.config.allowManualPickup) throw new AppError(403, MSG.MANUAL_DISABLED);
+        if (!employeeId) throw new AppError(400, '請輸入員工編號');
+        actor = normalizeEmployeeId(employeeId);
+        via = 'manual';
+      }
     }
 
     if (order.status === 'cancelled') throw new AppError(409, '訂單已取消');
     if (order.status === 'picked') throw new AppError(409, '此餐已取餐');
     if (isPastMealDeadline(order)) throw new AppError(409, '已逾期未取餐，請洽行政人員');
-    if (!employeeId) throw new AppError(400, '請輸入員工編號');
 
     if (order.delegateId) {
       // 有委託：只認指定的代領人，訂餐人本人也不放行
-      if (employeeId !== order.delegateId) throw new AppError(403, MSG.DELEGATE_MISMATCH);
-    } else if (employeeId !== order.employeeId) {
+      if (actor !== order.delegateId) throw new AppError(403, MSG.DELEGATE_MISMATCH);
+    } else if (actor !== order.employeeId) {
       throw new AppError(403, MSG.NOT_OWNER);
     }
 
     order.status = 'picked';
-    order.pickedBy = employeeId;
+    order.pickedBy = actor;
     order.pickedAt = new Date().toISOString();
+    order.pickedVia = via;
+    order.pickedKiosk = kioskId || null;
     store.save();
-    log('pickup.confirm', { id: order.id, by: employeeId, delegated: Boolean(order.delegateId) });
+    log('pickup.confirm', { id: order.id, by: actor, via, kiosk: kioskId || null });
     return orderView(order);
   }
 
@@ -553,8 +683,9 @@ function createService(store) {
       .filter((o) => !isExempt(date, o.employeeId) && isPastMealDeadline(o));
   }
 
-  function setExemption(date, employeeId, reason) {
+  function setExemption(date, rawEmployeeId, reason) {
     if (!isValidDate(date)) throw new AppError(400, '日期格式需為 YYYY-MM-DD');
+    const employeeId = normalizeEmployeeId(rawEmployeeId);
     requireEmployee(employeeId);
     store.db.exemptions[date] = store.db.exemptions[date] || {};
     store.db.exemptions[date][employeeId] = reason || '例外';
@@ -563,7 +694,8 @@ function createService(store) {
     return store.db.exemptions[date];
   }
 
-  function removeExemption(date, employeeId) {
+  function removeExemption(date, rawEmployeeId) {
+    const employeeId = normalizeEmployeeId(rawEmployeeId);
     if (store.db.exemptions[date]) delete store.db.exemptions[date][employeeId];
     store.save();
     log('exemption.remove', { date, employeeId });
@@ -587,9 +719,15 @@ function createService(store) {
     const dayOrders = activeOrders((o) => o.date === date);
     const byPrice = {};
     const byMeal = { lunch: 0, dinner: 0 };
+    const byVia = { token: 0, manual: 0, delegate: 0 };
+    let totalSpend = 0;
+    let employeePayTotal = 0;
     dayOrders.forEach((o) => {
       byPrice[o.price] = (byPrice[o.price] || 0) + 1;
       byMeal[o.meal] += 1;
+      totalSpend += o.price;
+      employeePayTotal += amountFor(o);
+      if (o.status === 'picked' && byVia[o.pickedVia] !== undefined) byVia[o.pickedVia] += 1;
     });
 
     const unclaimed = unclaimedOrders(date);
@@ -606,6 +744,10 @@ function createService(store) {
       waiting: dayOrders.filter((o) => o.status === 'booked' && !isPastMealDeadline(o)).length,
       byPrice,
       byMeal,
+      byVia,
+      totalSpend,
+      subsidyTotal: totalSpend - employeePayTotal,
+      employeePayTotal,
       unclaimedCount: deductionList.length,
       deductionTotal: deductionList.reduce((sum, o) => sum + o.amount, 0),
       deductionList,
@@ -646,6 +788,8 @@ function createService(store) {
     dayReport,
     dayOrders,
     orderingStatus,
+    normalizeEmployeeId,
+    tokenService,
     audit,
     listAudit,
   };

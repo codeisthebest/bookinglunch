@@ -1,5 +1,5 @@
 (function () {
-  const { esc, request, toast, money } = window.bl;
+  const { esc, request, toast, money, statusPill } = window.bl;
   const $ = (id) => document.getElementById(id);
   const KEY = 'bl_admin';
 
@@ -83,6 +83,7 @@
       loadBindings();
     }
     if (can('config.edit')) loadConfig();
+    if (can('kiosks.manage')) loadKiosks();
     if (can('admins.manage')) loadAdmins();
   }
 
@@ -93,7 +94,13 @@
       const r = await api('GET', `/api/admin/report?date=${$('reportDate').value}`);
       const tiers = Object.keys(r.byPrice).sort((a, b) => a - b)
         .map((p) => `<div class="stat"><div class="n">${r.byPrice[p]}</div><div class="l">${money(p)} 方案</div></div>`).join('');
+      const manualTile = r.byVia.manual > 0
+        ? `<div class="stat" style="border-color:var(--warn)"><div class="n">${r.byVia.manual}</div><div class="l">手動輸入取餐（未驗證）</div></div>` : '';
       let html = `<div class="stats">
+        <div class="stat"><div class="n">${money(r.totalSpend)}</div><div class="l">總訂餐花費</div></div>
+        <div class="stat"><div class="n">${money(r.subsidyTotal)}</div><div class="l">公司補貼小計</div></div>
+        <div class="stat"><div class="n">${money(r.employeePayTotal)}</div><div class="l">員工自付小計</div></div>
+        ${manualTile}
         <div class="stat"><div class="n">${r.totalOrders}</div><div class="l">總訂餐數</div></div>
         <div class="stat"><div class="n">${r.picked}</div><div class="l">已取餐</div></div>
         <div class="stat"><div class="n">${r.waiting}</div><div class="l">待取餐</div></div>
@@ -106,9 +113,9 @@
       if (r.deductionList.length === 0) {
         html += '<p class="muted">目前沒有未取餐紀錄</p>';
       } else {
-        html += '<table><tr><th>員編</th><th>姓名</th><th>餐別／品項</th><th class="num">金額</th><th>扣款狀態</th><th></th></tr>';
+        html += '<table><tr><th>員編</th><th>姓名</th><th>部門</th><th>餐別／品項</th><th class="num">金額</th><th>扣款狀態</th><th></th></tr>';
         r.deductionList.forEach((o) => {
-          html += `<tr><td>${esc(o.employeeId)}</td><td>${esc(o.employeeName)}</td>
+          html += `<tr><td>${esc(o.employeeId)}</td><td>${esc(o.employeeName)}</td><td>${esc(o.employeeDept)}</td>
             <td>${esc(o.mealLabel)}　${esc(o.itemName)}</td><td class="num">${money(o.amount)}</td>
             <td>${deductionLabel(o.deductionStatus)}</td>
             <td><select data-deduction="${esc(o.id)}" aria-label="變更扣款狀態" ${can('deduction.manage') ? '' : 'disabled'}>
@@ -116,6 +123,22 @@
             </select></td></tr>`;
         });
         html += '</table>';
+      }
+      html += '</div>';
+
+      // 當日訂單明細：含取餐方式，方便稽核「手動輸入」這種未經動態碼驗證的取餐
+      const orders = await api('GET', `/api/admin/orders?date=${$('reportDate').value}`);
+      const live = orders.filter((o) => o.status !== 'cancelled');
+      html += `<div class="card"><h2>當日訂單明細</h2>`;
+      if (live.length === 0) {
+        html += '<p class="muted">這天沒有訂單</p>';
+      } else {
+        html += `<table><tr><th>員編</th><th>姓名</th><th>部門</th><th>餐別／品項</th><th>狀態</th><th>取餐方式</th><th>取餐人</th><th>取餐口</th></tr>${
+          live.map((o) => `<tr><td>${esc(o.employeeId)}</td><td>${esc(o.employeeName)}</td><td>${esc(o.employeeDept)}</td>
+            <td>${esc(o.mealLabel)}　${esc(o.itemName)}${o.special ? ' ★' : ''}</td><td>${statusPill(o.status)}</td>
+            <td>${o.pickedVia === 'manual' ? `<span class="pill warn">${esc(o.pickedViaLabel)}</span>` : esc(o.pickedViaLabel || '—')}</td>
+            <td>${esc(o.pickedBy || '—')}</td><td>${esc(o.pickedKiosk || '—')}</td></tr>`).join('')
+        }</table>`;
       }
       html += '</div>';
       $('reportBody').innerHTML = html;
@@ -167,18 +190,32 @@
       return;
     }
     const ro = can('menu.edit') ? '' : 'disabled';
-    $('menuRows').innerHTML = menuItems.map((item, i) => `<div class="row" style="margin-bottom:8px;flex-wrap:nowrap">
-      <select data-i="${i}" data-f="meal" style="width:90px" ${ro}>
-        <option value="lunch" ${item.meal === 'lunch' ? 'selected' : ''}>午餐</option>
-        <option value="dinner" ${item.meal === 'dinner' ? 'selected' : ''}>晚餐</option></select>
-      <input data-i="${i}" data-f="name" value="${esc(item.name)}" placeholder="品名" ${ro}>
-      <input data-i="${i}" data-f="price" value="${esc(item.price)}" inputmode="numeric" style="width:90px" placeholder="金額" ${ro}>
-      ${ro ? '' : `<button data-remove="${i}" aria-label="刪除品項">✕</button>`}</div>`).join('');
+    $('menuRows').innerHTML = menuItems.map((item, i) => {
+      const sides = Array.isArray(item.sides) ? item.sides.join('、') : (item.sides || '');
+      return `<div class="card" style="padding:12px;margin-bottom:8px">
+        <div class="row" style="flex-wrap:nowrap;margin-bottom:8px">
+          <select data-i="${i}" data-f="meal" style="width:90px" ${ro}>
+            <option value="lunch" ${item.meal === 'lunch' ? 'selected' : ''}>午餐</option>
+            <option value="dinner" ${item.meal === 'dinner' ? 'selected' : ''}>晚餐</option></select>
+          <input data-i="${i}" data-f="name" value="${esc(item.name)}" placeholder="品名（例如 A餐）" ${ro}>
+          <input data-i="${i}" data-f="price" value="${esc(item.price)}" inputmode="numeric" style="width:90px" placeholder="定價" ${ro}>
+          ${ro ? '' : `<button data-remove="${i}" aria-label="刪除品項">✕</button>`}</div>
+        <div class="row" style="margin-bottom:8px">
+          <input data-i="${i}" data-f="main" value="${esc(item.main || '')}" placeholder="主菜" style="flex:1;min-width:140px" ${ro}>
+          <input data-i="${i}" data-f="sides" value="${esc(sides)}" placeholder="配菜（用頓號分隔）" style="flex:2;min-width:180px" ${ro}>
+          <input data-i="${i}" data-f="veg" value="${esc(item.veg || '')}" placeholder="蔬菜／湯品" style="flex:1;min-width:140px" ${ro}></div>
+        <label style="display:flex;gap:8px;align-items:center;margin:0;color:var(--text)">
+          <input type="checkbox" data-i="${i}" data-f="special" style="width:auto;min-height:auto" ${item.special ? 'checked' : ''} ${ro}>
+          ★ 特殊商品（須於用餐日前 N 天訂購，當日自動鎖定；N 在「系統設定」）</label></div>`;
+    }).join('');
   }
 
   async function saveMenu() {
     try {
-      const items = menuItems.map((i) => ({ id: i.id, meal: i.meal, name: i.name, price: Number(i.price) }));
+      const items = menuItems.map((i) => ({
+        id: i.id, meal: i.meal, name: i.name, price: Number(i.price),
+        main: i.main, sides: i.sides, veg: i.veg, special: Boolean(i.special),
+      }));
       menuItems = await api('PUT', '/api/admin/menu', { date: $('menuDate').value, items });
       renderMenuRows();
       toast('菜單已儲存');
@@ -223,6 +260,7 @@
       const r = await api('POST', '/api/admin/employees/import', { csv: $('csvText').value });
       msg.className = 'notice ok';
       msg.textContent = `匯入完成：新增 ${r.created}、更新 ${r.updated}、略過 ${r.errors.length}，目前共 ${r.total} 人`
+        + (r.padded ? `；有 ${r.padded} 筆員編不足位數，已自動補零（請確認 Excel 員編欄位是否為文字格式）` : '')
         + (r.errors.length ? `（第 ${r.errors.map((e) => e.line).join('、')} 行有誤）` : '');
       loadEmployees();
     } catch (err) {
@@ -238,6 +276,9 @@
       const c = await api('GET', '/api/admin/config');
       $('cutoff').value = c.orderCutoff;
       $('subsidy').value = c.subsidy;
+      $('specialLeadDays').value = c.specialLeadDays;
+      $('employeeIdLength').value = c.employeeIdLength;
+      $('allowManualPickup').checked = Boolean(c.allowManualPickup);
       const clock = await api('GET', '/api/admin/clock');
       $('clockNow').textContent = `${clock.taipei.date} ${clock.taipei.time}${clock.simulated ? '（模擬中）' : ''}`;
     } catch (err) {
@@ -254,6 +295,42 @@
     } catch (err) {
       fail(err);
     }
+  }
+
+  // ---------- 取餐口裝置 ----------
+
+  function showKey(deviceId, key) {
+    const box = $('kioskKeyNotice');
+    box.innerHTML = `裝置 <b>${esc(deviceId)}</b> 的金鑰（只顯示這一次，請立即輸入到平板）：<div class="big-code" style="font-size:18px;word-break:break-all;letter-spacing:0">${esc(key)}</div>`;
+    box.classList.remove('hidden');
+  }
+
+  async function loadKiosks() {
+    try {
+      const list = await api('GET', '/api/admin/kiosks');
+      $('kioskList').innerHTML = list.length === 0
+        ? '<p class="muted">尚未建立取餐口裝置，取餐平板無法登入。</p>'
+        : `<table><tr><th>裝置編號</th><th>名稱</th><th>狀態</th><th>最後上線</th><th></th></tr>${
+          list.map((k) => `<tr><td>${esc(k.id)}</td><td>${esc(k.name)}</td>
+            <td>${k.active ? '<span class="pill ok">啟用</span>' : '<span class="pill danger">已停用</span>'}</td>
+            <td>${k.lastSeen ? esc(new Date(k.lastSeen).toLocaleString('zh-TW')) : '—'}</td>
+            <td style="white-space:nowrap"><button data-kiosk-reset="${esc(k.id)}">重設金鑰</button>
+              <button class="${k.active ? 'danger' : ''}" data-kiosk-toggle="${esc(k.id)}" data-active="${k.active}">${k.active ? '停用' : '啟用'}</button></td></tr>`).join('')
+        }</table>`;
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  async function updateKiosk(id, patch, okMessage) {
+    try {
+      const r = await api('PUT', `/api/admin/kiosks/${encodeURIComponent(id)}`, patch);
+      toast(okMessage);
+      if (r.key) showKey(id, r.key);
+    } catch (err) {
+      fail(err);
+    }
+    loadKiosks();
   }
 
   // ---------- 管理員帳號 ----------
@@ -316,6 +393,15 @@
           .then(() => { toast('已解除綁定'); loadBindings(); loadEmployees(); })
           .catch(fail);
       }
+    } else if (t.dataset.kioskReset) {
+      if (confirm(`重設「${t.dataset.kioskReset}」的金鑰？平板需要用新金鑰重新登入。`)) {
+        updateKiosk(t.dataset.kioskReset, { resetKey: true }, '已重設金鑰');
+      }
+    } else if (t.dataset.kioskToggle) {
+      const activate = t.dataset.active !== 'true';
+      if (activate || confirm(`確定停用「${t.dataset.kioskToggle}」？這台平板會立即無法取餐。`)) {
+        updateKiosk(t.dataset.kioskToggle, { active: activate }, activate ? '已啟用' : '已停用');
+      }
     } else if (t.dataset.adminPw) {
       const password = prompt(`請輸入「${t.dataset.adminPw}」的新密碼（至少 8 個字元）。對方目前的登入會立即失效。`);
       if (password) updateAdmin(t.dataset.adminPw, { password }, '密碼已重設');
@@ -332,7 +418,9 @@
 
   document.addEventListener('input', (e) => {
     const t = e.target;
-    if (t.dataset.f && t.dataset.i !== undefined) menuItems[Number(t.dataset.i)][t.dataset.f] = t.value;
+    if (t.dataset.f && t.dataset.i !== undefined) {
+      menuItems[Number(t.dataset.i)][t.dataset.f] = t.type === 'checkbox' ? t.checked : t.value;
+    }
   });
 
   document.addEventListener('change', async (e) => {
@@ -385,6 +473,18 @@
       fail(err);
     }
   });
+  $('kioskAdd').addEventListener('click', async () => {
+    try {
+      const r = await api('POST', '/api/admin/kiosks', { id: $('kioskNewId').value.trim(), name: $('kioskNewName').value.trim() });
+      toast('已建立裝置');
+      showKey(r.kiosk.id, r.key);
+      $('kioskNewId').value = '';
+      $('kioskNewName').value = '';
+      loadKiosks();
+    } catch (err) {
+      fail(err);
+    }
+  });
   $('adminAdd').addEventListener('click', async () => {
     try {
       await api('POST', '/api/admin/admins', {
@@ -404,7 +504,7 @@
   $('exportBtn').addEventListener('click', exportCsv);
   $('menuLoad').addEventListener('click', loadMenu);
   $('menuAdd').addEventListener('click', () => {
-    menuItems.push({ meal: 'lunch', name: '', price: 60 });
+    menuItems.push({ meal: 'lunch', name: '', price: 60, main: '', sides: '', veg: '', special: false });
     renderMenuRows();
   });
   $('menuSave').addEventListener('click', saveMenu);
@@ -415,7 +515,13 @@
   });
   $('configSave').addEventListener('click', async () => {
     try {
-      await api('PUT', '/api/admin/config', { orderCutoff: $('cutoff').value.trim(), subsidy: $('subsidy').value });
+      await api('PUT', '/api/admin/config', {
+        orderCutoff: $('cutoff').value.trim(),
+        subsidy: $('subsidy').value,
+        specialLeadDays: $('specialLeadDays').value,
+        employeeIdLength: $('employeeIdLength').value,
+        allowManualPickup: $('allowManualPickup').checked,
+      });
       toast('設定已儲存');
     } catch (err) {
       fail(err);

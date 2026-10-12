@@ -5,6 +5,7 @@ const path = require('node:path');
 const { createStore } = require('../src/store');
 const { createService } = require('../src/service');
 const { createAdminService } = require('../src/admins');
+const { createKioskService } = require('../src/kiosks');
 const { taipeiNow } = require('../src/time');
 
 const store = createStore(process.env.DATA_FILE || path.join(__dirname, '..', 'data', 'db.json'));
@@ -26,6 +27,9 @@ admins.ensureBootstrap(process.env.ADMIN_PASSWORD || 'admin');
 admins.create({ username: 'assistant', displayName: '助理小姐', role: 'operator', password: 'demo-assistant-1' });
 admins.create({ username: 'auditor', displayName: '稽核（唯讀）', role: 'viewer', password: 'demo-auditor-1' });
 
+// 展示用取餐口裝置（金鑰固定，僅限展示環境；正式環境請在後台「系統設定」建立並使用隨機金鑰）
+createKioskService(store).create({ id: 'KIOSK-01', name: '展示用取餐平板', key: 'kiosk-key-demo-0001' });
+
 // 當月每個平日（週一至週五）都上架同一份展示菜單
 const { date } = taipeiNow();
 const [year, month] = date.split('-').map(Number);
@@ -36,14 +40,15 @@ for (let d = 1; d <= daysInMonth; d += 1) {
   const weekday = new Date(`${day}T12:00:00+08:00`).getUTCDay();
   if (weekday === 0 || weekday === 6) continue;
   service.setMenu(day, [
-    { meal: 'lunch', name: '照燒雞腿飯', price: 60 },
-    { meal: 'lunch', name: '紅燒排骨飯', price: 70 },
-    { meal: 'lunch', name: '鮭魚排餐', price: 80 },
-    { meal: 'dinner', name: '滷肉飯套餐', price: 60 },
-    { meal: 'dinner', name: '薑燒豬排飯', price: 70 },
-    { meal: 'dinner', name: '牛肉麵套餐', price: 80 },
+    { meal: 'lunch', name: '素食 A餐', price: 60, main: '滷四角油', sides: ['炒三色豆', '焗汁洋芋'], veg: '營養青菜、時蔬兩道' },
+    { meal: 'lunch', name: 'A餐', price: 70, main: '照燒雞排', sides: ['蔥爆香腸', '蘿蔔滷黑輪'], veg: '時蔬兩道' },
+    { meal: 'lunch', name: 'B餐', price: 80, main: '炒泡麵＋主菜', special: true },
+    { meal: 'dinner', name: '滷肉飯套餐', price: 60, main: '滷肉飯', sides: ['滷蛋', '燙青菜'] },
+    { meal: 'dinner', name: '薑燒豬排飯', price: 70, main: '薑燒豬排', sides: ['玉子燒'], veg: '時蔬兩道' },
+    { meal: 'dinner', name: '牛肉麵套餐', price: 80, main: '紅燒牛肉麵', special: true },
   ]);
   menuDays += 1;
 }
 
+console.log(`展示取餐口裝置：KIOSK-01（金鑰 kiosk-key-demo-0001）`);
 console.log(`已產生 30 位員工與 ${year}-${String(month).padStart(2, '0')} 月 ${menuDays} 個平日的菜單（資料檔：${process.env.DATA_FILE || 'data/db.json'}）`);

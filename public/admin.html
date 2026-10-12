@@ -90,7 +90,23 @@
           <h2>訂餐設定</h2>
           <div class="field"><label for="cutoff">每日截止時間（HH:mm）</label><input id="cutoff" placeholder="10:00"></div>
           <div class="field"><label for="subsidy">公司補貼金額（元）</label><input id="subsidy" inputmode="numeric"></div>
+          <div class="field"><label for="specialLeadDays">★ 特殊商品須提前幾天訂購</label><input id="specialLeadDays" inputmode="numeric"></div>
+          <div class="field"><label for="employeeIdLength">員編位數（純數字員編不足時自動補零，0 = 不補）</label><input id="employeeIdLength" inputmode="numeric"></div>
+          <div class="field"><label style="display:flex;gap:8px;align-items:center;color:var(--text);font-size:15px">
+            <input type="checkbox" id="allowManualPickup" style="width:auto;min-height:auto">
+            取餐口允許手動輸入員編（忘了帶手機的後備方式；取餐紀錄會標記為「未經動態碼驗證」）</label></div>
           <button id="configSave" class="primary">儲存設定</button>
+        </div>
+        <div class="card" data-perm="kiosks.manage">
+          <h2>取餐口裝置</h2>
+          <p class="muted">每台取餐平板用「裝置編號＋裝置金鑰」登入。金鑰只在建立或重設時顯示一次，請立即輸入到平板上。</p>
+          <div id="kioskKeyNotice" class="notice ok hidden"></div>
+          <div class="row" style="align-items:flex-end;margin-bottom:12px">
+            <div style="flex:1"><label for="kioskNewId">裝置編號</label><input id="kioskNewId" placeholder="KIOSK-01" autocomplete="off"></div>
+            <div style="flex:1"><label for="kioskNewName">名稱</label><input id="kioskNewName" placeholder="一樓餐廳入口" autocomplete="off"></div>
+            <button id="kioskAdd" class="primary">新增裝置</button>
+          </div>
+          <div id="kioskList"></div>
         </div>
         <div class="card">
           <h2>展示用：模擬時間</h2>

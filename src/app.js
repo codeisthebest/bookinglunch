@@ -7,6 +7,8 @@ const { createService, AppError } = require('./service');
 const { getClock, setClock, taipeiNow } = require('./time');
 const { toCsv } = require('./csv');
 const { createAdminService } = require('./admins');
+const { createKioskService } = require('./kiosks');
+const { createTokenService } = require('./pickup-token');
 const { ROLES, PERMISSIONS, permissionsOf, hasPermission } = require('./permissions');
 
 const LINE_VERIFY_URL = 'https://api.line.me/oauth2/v2.1/verify';
@@ -47,7 +49,10 @@ function resolveAuth(options = {}) {
 }
 
 function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin', auth } = {}) {
-  const service = createService(store);
+  // 取餐碼簽章金鑰：由伺服器持有。未設定 QR_SECRET 時每次啟動隨機產生（舊碼重啟後失效，影響僅 60 秒）
+  const tokens = createTokenService({ secret: process.env.QR_SECRET });
+  const service = createService(store, { tokens });
+  const kioskService = createKioskService(store);
   const adminService = createAdminService(store);
   adminService.ensureBootstrap(adminPassword);
   const authConfig = resolveAuth(auth);
@@ -110,6 +115,25 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
     };
   }
 
+  // 取餐口裝置：只有以裝置金鑰登入的平板能呼叫取餐 API；停用裝置立即生效
+  function requireKiosk(req, res, next) {
+    const token = bearer(req);
+    const session = getSession(token);
+    if (!session || session.role !== 'kiosk') return res.status(401).json({ error: '取餐口裝置未登入' });
+    if (!kioskService.getActive(session.deviceId)) {
+      sessions.delete(token);
+      return res.status(401).json({ error: '此取餐口裝置已停用' });
+    }
+    req.kioskId = session.deviceId;
+    return next();
+  }
+
+  function revokeSessionsOf(match) {
+    sessions.forEach((session, token) => {
+      if (match(session)) sessions.delete(token);
+    });
+  }
+
   function profileOf(admin) {
     return {
       username: admin.username,
@@ -137,10 +161,9 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
   app.post('/api/auth/employee', (req, res, next) => {
     try {
       if (authConfig.mode !== 'mock') throw new AppError(404, '此環境已啟用 LINE 登入');
-      const employeeId = String(req.body.employeeId || '').trim();
-      const employee = service.getEmployee(employeeId);
+      const employee = service.getEmployee(req.body.employeeId);
       if (!employee) throw new AppError(403, '查無此員工編號，僅限內部員工使用');
-      const token = issue({ role: 'employee', employeeId });
+      const token = issue({ role: 'employee', employeeId: employee.id });
       res.json({ token, employee });
     } catch (err) {
       next(err);
@@ -206,6 +229,12 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
     }
   });
 
+  // 員工的動態取餐碼：每 30 秒換一次，簽章由伺服器產生
+  app.get('/api/me/pickup-token', requireEmployee, (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json(tokens.issue(req.employeeId));
+  });
+
   app.get('/api/me', requireEmployee, (req, res, next) => {
     try {
       res.json(service.getEmployee(req.employeeId));
@@ -265,33 +294,46 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
     }
   });
 
-  // ---------- 取餐口（無需登入，放在現場平板） ----------
+  // ---------- 取餐口（現場平板，以裝置編號＋裝置金鑰登入） ----------
 
-  app.post('/api/pickup/lookup', (req, res, next) => {
+  app.post('/api/kiosk/login', (req, res, next) => {
     try {
-      res.json(service.pickupLookup(req.body.code));
+      const device = kioskService.authenticate(req.body.deviceId, req.body.key);
+      res.json({ token: issue({ role: 'kiosk', deviceId: device.id }), device });
     } catch (err) {
       next(err);
     }
   });
 
-  app.post('/api/pickup/confirm', (req, res, next) => {
+  app.post('/api/pickup/lookup', requireKiosk, (req, res, next) => {
     try {
-      const order = service.pickupConfirm({
-        orderId: req.body.orderId,
-        code: req.body.code,
-        employeeId: String(req.body.employeeId || '').trim(),
-      });
+      res.json(service.pickupLookup(req.body.code, { kioskId: req.kioskId }));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post('/api/pickup/confirm', requireKiosk, (req, res, next) => {
+    try {
+      const order = service.pickupConfirm(
+        {
+          orderId: req.body.orderId,
+          code: req.body.code,
+          employeeId: String(req.body.employeeId || '').trim(),
+          ticket: req.body.ticket,
+        },
+        { kioskId: req.kioskId },
+      );
       res.json(order);
     } catch (err) {
       next(err);
     }
   });
 
-  app.get('/api/pickup/status', (req, res, next) => {
+  app.get('/api/pickup/status', requireKiosk, (req, res, next) => {
     try {
       const today = taipeiNow();
-      res.json({ date: today.date, time: today.time, ...service.orderingStatus(today.date) });
+      res.json({ date: today.date, time: today.time, ...service.orderingStatus(today.date), kioskId: req.kioskId });
     } catch (err) {
       next(err);
     }
@@ -332,6 +374,27 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
       const { admin, revokeSessions } = adminService.update(req.params.username, req.body, req.admin.username);
       if (revokeSessions) revokeAdminSessions(req.params.username);
       res.json(admin);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get('/api/admin/kiosks', guard('kiosks.manage'), (req, res) => res.json(kioskService.list()));
+
+  app.post('/api/admin/kiosks', guard('kiosks.manage'), (req, res, next) => {
+    try {
+      // 金鑰只在建立當下回傳一次，之後只存雜湊
+      res.status(201).json(kioskService.create({ id: req.body.id, name: req.body.name }));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.put('/api/admin/kiosks/:id', guard('kiosks.manage'), (req, res, next) => {
+    try {
+      const { kiosk, key, revokeSessions } = kioskService.update(req.params.id.toUpperCase(), req.body);
+      if (revokeSessions) revokeSessionsOf((sess) => sess.role === 'kiosk' && sess.deviceId === kiosk.id);
+      res.json({ kiosk, key });
     } catch (err) {
       next(err);
     }
@@ -469,7 +532,7 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
     return res.status(500).json({ error: '伺服器錯誤' });
   });
 
-  return { app, service, adminService, sessions, authMode: authConfig.mode };
+  return { app, service, adminService, kioskService, tokens, sessions, authMode: authConfig.mode };
 }
 
 module.exports = { createApp };

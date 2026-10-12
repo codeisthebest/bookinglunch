@@ -112,6 +112,7 @@
   }
 
   function logout() {
+    stopPickupToken();
     session = null;
     state = null;
     saveSession(null);
@@ -175,10 +176,17 @@
       if (items.length === 0) html += '<p class="muted">這天尚未上架菜單</p>';
       items.forEach((item) => {
         const pay = Math.max(0, item.price - state.subsidy);
-        const disabled = !state.ordering.open || bookedMeals.has(meal);
+        const disabled = !state.ordering.open || bookedMeals.has(meal) || !item.orderable;
+        const dishes = [
+          item.main ? `主菜：${item.main}` : '',
+          item.sides && item.sides.length ? `配菜：${item.sides.join('、')}` : '',
+          item.veg || '',
+        ].filter(Boolean).map(esc).join('<br>');
         html += `<div class="menu-item">
-          <div><div>${esc(item.name)}</div>
-            <div class="muted">定價 ${money(item.price)}，補貼後自付 <b>${money(pay)}</b></div></div>
+          <div><div>${esc(item.name)}${item.special ? ' <span class="pill warn">★ 需提前' + esc(state.specialLeadDays) + '天</span>' : ''}</div>
+            ${dishes ? `<div class="muted">${dishes}</div>` : ''}
+            <div class="muted">定價 ${money(item.price)}，補貼後自付 <b>${money(pay)}</b></div>
+            ${item.orderable ? '' : `<div class="muted" style="color:var(--warn)">⚠ ${esc(item.lockReason)}，這天已無法訂購</div>`}</div>
           <button class="primary" data-order="${esc(item.id)}" ${disabled ? 'disabled' : ''}>
             ${bookedMeals.has(meal) ? '已訂' : '訂購'}</button>
         </div>`;
@@ -241,20 +249,62 @@
     drawQrs($('tab-orders'));
   }
 
+  // 動態取餐碼：QR 內容由伺服器簽發，每 30 秒更新；只在「取餐碼」分頁開著時才向伺服器要
+  let pickupTimer = null;
+  let pickupLeft = 0;
+
+  function stopPickupToken() {
+    clearInterval(pickupTimer);
+    pickupTimer = null;
+  }
+
+  async function loadPickupToken() {
+    try {
+      const t = await api('GET', '/api/me/pickup-token');
+      const box = $('pickupQr');
+      if (!box) return;
+      box.dataset.qr = t.token;
+      drawQrs($('tab-pickup'));
+      pickupLeft = t.refreshInSeconds;
+    } catch (err) {
+      const el = $('pickupCountdown');
+      if (el) el.textContent = err.message;
+    }
+  }
+
+  function startPickupToken() {
+    if (pickupTimer) return;
+    loadPickupToken();
+    pickupTimer = setInterval(() => {
+      pickupLeft -= 1;
+      const el = $('pickupCountdown');
+      if (el) el.textContent = `${Math.max(pickupLeft, 0)} 秒後自動更新`;
+      if (pickupLeft <= 0) {
+        pickupLeft = 30;
+        loadPickupToken();
+      }
+    }, 1000);
+  }
+
   function renderPickup() {
     const id = session.employee.id;
-    $('tab-pickup').innerHTML = `<div class="card">
-      <h2>我的取餐碼</h2>
-      <p class="muted">到取餐口出示，或在取餐口輸入員工編號。</p>
-      <div class="qr" data-qr="EMP:${esc(id)}"></div>
-      <div class="big-code">${esc(id)}</div></div>`;
-    drawQrs($('tab-pickup'));
+    if (!$('pickupQr')) {
+      $('tab-pickup').innerHTML = `<div class="card">
+        <h2>我的取餐碼</h2>
+        <p class="muted">到取餐口出示這個 QR Code。每 30 秒自動更新，截圖轉傳超過 1 分鐘就會失效，請直接出示手機畫面。</p>
+        <div class="qr" id="pickupQr"></div>
+        <div class="muted" id="pickupCountdown" style="text-align:center;margin:6px 0"></div>
+        <div class="muted" style="text-align:center">忘了帶手機時，可在取餐口輸入員工編號</div>
+        <div class="big-code">${esc(id)}</div></div>`;
+    }
+    if (tab === 'pickup') startPickupToken();
+    else stopPickupToken();
   }
 
   function drawQrs(root) {
     root.querySelectorAll('[data-qr]').forEach((el) => {
       if (typeof window.qrcode !== 'function') {
-        el.textContent = '（QR Code 元件未載入，請改用上方代碼）';
+        el.textContent = `（QR Code 元件未載入）${el.dataset.qr}`;
         el.className = 'muted';
         return;
       }
