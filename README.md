@@ -30,6 +30,38 @@ npm test               # 單元與 API 測試
 | `LIFF_ID` | LIFF 應用的 ID（形如 `1234567890-AbCdEfGh`）。LINE 模式必填 |
 | `AUTH_MODE` | 選填，`mock`（模擬登入）或 `line`；未設定時依是否有 `LINE_LOGIN_CHANNEL_ID` 決定 |
 
+## Docker 部署
+
+映像以 `node:22-alpine` 為基底，約 250 MB，以非 root 的 `node` 使用者執行，內建健康檢查（`/healthz`），收到 `docker stop` 會正常關閉。
+
+```bash
+cp .env.example .env          # 編輯 .env：至少設定 ADMIN_PASSWORD 與 QR_SECRET
+docker compose up -d --build
+# 開啟 http://主機:3000（埠號可用 HOST_PORT 調整）
+```
+
+- `QR_SECRET` 建議用 `openssl rand -hex 32` 產生。`ADMIN_PASSWORD` 只在**第一次啟動**建立 `admin` 時使用。
+- 訂單、員工名單、帳號都存在具名 volume `bookinglunch-data`（容器內 `/data/db.json`），**重新部署或重建容器不會遺失，但請定期備份**。
+- **只能跑一個實例**：資料存在單一 JSON 檔，登入狀態在記憶體中，不要設定多個 replica。容器重啟後後台管理員需重新登入（LINE 員工會自動重新登入，取餐口平板會自動重新上線）。
+- **LIFF 需要 HTTPS**：容器本身只提供 HTTP，請在前面放反向代理（Nginx、Caddy、公司的負載平衡器等）終止 TLS 後轉發到 3000 埠。
+
+常用指令（先停止服務再操作資料，避免記憶體中的狀態覆蓋檔案）：
+
+```bash
+# 載入展示資料（會覆寫 /data/db.json，僅限展示環境）
+docker compose stop app && docker compose run --rm app node scripts/seed.js && docker compose start app
+
+# 忘記系統管理員密碼
+docker compose stop app && docker compose run --rm app node scripts/reset-admin.js admin 新密碼 && docker compose start app
+
+# 備份資料
+docker run --rm -v bookinglunch_bookinglunch-data:/data -v "$PWD":/backup alpine \
+  tar czf /backup/bookinglunch-data-$(date +%F).tgz -C /data .
+
+# 查看記錄
+docker compose logs -f app
+```
+
 ## 管理員與權限
 
 每位管理員有自己的帳號密碼，角色決定能做什麼。權限是最小單位，角色只是權限的組合（定義在 `src/permissions.js`，要新增角色只改那一個檔案）。

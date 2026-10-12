@@ -121,3 +121,14 @@ test('完整流程：匯入、上架、訂餐、委託、取餐、未取餐報�
     server.close();
   }
 });
+
+test('健康檢查端點不需登入且不洩漏資料', async () => {
+  const { server, call } = await start();
+  try {
+    const r = await call('GET', '/healthz');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json, { ok: true });
+  } finally {
+    server.close();
+  }
+});

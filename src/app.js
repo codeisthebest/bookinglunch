@@ -60,6 +60,9 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
 
   const app = express();
   app.use(express.json({ limit: '1mb' }));
+
+  // 健康檢查（容器、負載平衡器用）：不需登入，也不回傳任何資料
+  app.get('/healthz', (req, res) => res.json({ ok: true }));
   app.use(express.static(path.join(__dirname, '..', 'public')));
 
   function issue(session) {

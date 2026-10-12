@@ -1,0 +1,22 @@
+# 啟動：docker compose up -d --build
+# 設定值放在同目錄的 .env（範本見 .env.example），不要把 .env 放進版本控制。
+services:
+  app:
+    build: .
+    image: bookinglunch:latest
+    init: true                      # 正確轉送停止訊號並回收子行程
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-3000}:3000"
+    environment:
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      QR_SECRET: ${QR_SECRET:-}
+      LINE_LOGIN_CHANNEL_ID: ${LINE_LOGIN_CHANNEL_ID:-}
+      LIFF_ID: ${LIFF_ID:-}
+      AUTH_MODE: ${AUTH_MODE:-}
+      TZ: Asia/Taipei
+    volumes:
+      - bookinglunch-data:/data     # 訂單、員工、帳號都在這裡，務必備份
+
+volumes:
+  bookinglunch-data:
