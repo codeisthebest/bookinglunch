@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>訂餐管理後台</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <style>main { max-width: 960px; } textarea { width: 100%; min-height: 140px; font: inherit; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--text); }</style>
+</head>
+<body>
+  <header class="top">
+    <h1>訂餐管理後台</h1>
+    <button id="logoutBtn" class="hidden">登出</button>
+  </header>
+
+  <main>
+    <section id="login" class="card hidden">
+      <h2>管理員登入</h2>
+      <div class="field"><label for="password">密碼</label><input id="password" type="password"></div>
+      <button id="loginBtn" class="primary">登入</button>
+      <div id="loginMsg" class="notice danger hidden" style="margin-top:12px"></div>
+    </section>
+
+    <section id="app" class="hidden">
+      <nav class="tabs">
+        <button data-tab="report" aria-selected="true">當日報表</button>
+        <button data-tab="menu" aria-selected="false">菜單管理</button>
+        <button data-tab="employees" aria-selected="false">員工名單</button>
+        <button data-tab="settings" aria-selected="false">系統設定</button>
+      </nav>
+
+      <section id="tab-report">
+        <div class="card row">
+          <div><label for="reportDate">日期</label><input id="reportDate" type="date"></div>
+          <div style="display:flex;gap:8px"><button id="reportBtn" class="primary">查詢</button>
+            <button id="exportBtn">匯出扣款清單 CSV</button></div>
+        </div>
+        <div id="reportBody"></div>
+      </section>
+
+      <section id="tab-menu" class="hidden">
+        <div class="card">
+          <div class="row">
+            <div><label for="menuDate">菜單日期</label><input id="menuDate" type="date"></div>
+            <button id="menuLoad">載入</button>
+          </div>
+          <div id="menuRows" style="margin-top:12px"></div>
+          <div style="display:flex;gap:8px;margin-top:12px">
+            <button id="menuAdd">＋ 新增品項</button>
+            <button id="menuSave" class="primary">儲存菜單</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-employees" class="hidden">
+        <div class="card">
+          <h2>匯入員工名單（CSV）</h2>
+          <p class="muted">標題列需包含「員工編號」「姓名」，可選「部門」。Excel 或鼎新匯出後另存為 CSV（UTF-8）即可。相同員編會更新。</p>
+          <input type="file" id="csvFile" accept=".csv,text/csv">
+          <div class="field" style="margin-top:10px"><label for="csvText">或直接貼上內容</label>
+            <textarea id="csvText" placeholder="員工編號,姓名,部門&#10;E001,王小明,行政"></textarea></div>
+          <button id="importBtn" class="primary">匯入</button>
+          <div id="importMsg" class="notice info hidden" style="margin-top:12px"></div>
+        </div>
+        <div class="card"><h2>目前名單</h2><div id="employeeList"></div></div>
+      </section>
+
+      <section id="tab-settings" class="hidden">
+        <div class="card">
+          <h2>訂餐設定</h2>
+          <div class="field"><label for="cutoff">每日截止時間（HH:mm）</label><input id="cutoff" placeholder="09:00"></div>
+          <div class="field"><label for="subsidy">公司補貼金額（元）</label><input id="subsidy" inputmode="numeric"></div>
+          <button id="configSave" class="primary">儲存設定</button>
+        </div>
+        <div class="card">
+          <h2>例外名單（出差、請假免扣）</h2>
+          <div class="row" style="align-items:flex-end">
+            <div style="flex:1"><label for="exDate">日期</label><input id="exDate" type="date"></div>
+            <div style="flex:1"><label for="exEmp">員工編號</label><input id="exEmp"></div>
+            <div style="flex:1"><label for="exReason">原因</label><input id="exReason" placeholder="出差"></div>
+            <button id="exAdd">加入</button>
+          </div>
+        </div>
+        <div class="card">
+          <h2>展示用：模擬時間</h2>
+          <p class="muted">用來演示截止與未取餐判定，正式環境請清除。目前：<span id="clockNow"></span></p>
+          <div class="row" style="align-items:flex-end">
+            <div style="flex:1"><label for="clockInput">模擬時間</label><input id="clockInput" type="datetime-local"></div>
+            <button id="clockSet">套用</button>
+            <button id="clockClear">恢復系統時間</button>
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script src="assets/common.js"></script>
+  <script src="assets/admin.js"></script>
+</body>
+</html>

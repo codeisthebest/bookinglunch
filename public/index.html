@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>員工訂餐</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+</head>
+<body>
+  <header class="top">
+    <h1>員工訂餐</h1>
+    <div id="who" class="muted"></div>
+  </header>
+
+  <main>
+    <!-- 登入（原型以員編模擬 LIFF 綁定；正式版改為 LINE 登入） -->
+    <section id="login" class="card hidden">
+      <h2>登入</h2>
+      <p class="muted">請輸入您的員工編號。僅限公司內部員工使用。</p>
+      <div class="field">
+        <label for="employeeId">員工編號</label>
+        <input id="employeeId" autocomplete="off" inputmode="text" placeholder="例如 E001">
+      </div>
+      <button id="loginBtn" class="primary" style="width:100%">登入</button>
+      <div id="loginMsg" class="notice danger hidden" style="margin-top:12px"></div>
+    </section>
+
+    <section id="app" class="hidden">
+      <div id="status" class="notice info"></div>
+
+      <nav class="tabs" role="tablist">
+        <button data-tab="menu" aria-selected="true">今日菜單</button>
+        <button data-tab="orders" aria-selected="false">我的訂單</button>
+        <button data-tab="pickup" aria-selected="false">取餐碼</button>
+      </nav>
+
+      <section id="tab-menu"></section>
+      <section id="tab-orders" class="hidden"></section>
+      <section id="tab-pickup" class="hidden"></section>
+
+      <div class="row" style="margin-top:16px">
+        <span class="muted" id="whoLine"></span>
+        <button id="logoutBtn">登出</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="assets/common.js"></script>
+  <script src="assets/employee.js"></script>
+</body>
+</html>

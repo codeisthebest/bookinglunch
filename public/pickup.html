@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>取餐口</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <style>
+    main { max-width: 640px; }
+    #scanInput { font-size: 22px; min-height: 56px; text-align: center; }
+    .result-title { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+    video { width: 100%; border-radius: 12px; background: #000; }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <h1>取餐口</h1>
+    <div id="clock" class="muted"></div>
+  </header>
+
+  <main>
+    <div id="state" class="notice info"></div>
+
+    <section class="card" id="scanCard">
+      <label for="scanInput">掃描員工 QR Code，或輸入員工編號／委託碼</label>
+      <input id="scanInput" autocomplete="off" autofocus placeholder="等待掃描…">
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button id="lookupBtn" class="primary" style="flex:1">查詢</button>
+        <button id="cameraBtn" class="hidden">📷 相機掃碼</button>
+      </div>
+      <video id="video" class="hidden" playsinline muted style="margin-top:10px"></video>
+    </section>
+
+    <section id="result" class="hidden"></section>
+  </main>
+
+  <script src="assets/common.js"></script>
+  <script src="assets/pickup.js"></script>
+</body>
+</html>

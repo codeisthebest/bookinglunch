@@ -1,0 +1,17 @@
+{
+  "name": "bookinglunch",
+  "version": "0.1.0",
+  "description": "企業內部訂餐與取餐管理系統（原型）",
+  "private": true,
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "express": "4.21.2"
+  }
+}
