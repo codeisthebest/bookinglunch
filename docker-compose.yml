@@ -16,7 +16,7 @@ services:
       AUTH_MODE: ${AUTH_MODE:-}
       TZ: Asia/Taipei
     volumes:
-      - bookinglunch-data:/data     # 訂單、員工、帳號都在這裡，務必備份
+      - bookinglunch-data:/data     # SQLite 資料庫（/data/bookinglunch.db）在這裡，務必備份：docker compose exec app node scripts/backup.js
 
 volumes:
   bookinglunch-data:

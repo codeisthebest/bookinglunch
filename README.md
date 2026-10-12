@@ -7,7 +7,7 @@
 
 ```bash
 npm install
-node scripts/seed.js   # 產生 30 位展示用員工（E001–E030）與當月平日菜單；會覆寫 data/db.json
+node scripts/seed.js   # 產生 30 位展示用員工（E001–E030）與當月平日菜單；會清空資料庫 data/bookinglunch.db 再重建
 npm start              # http://localhost:3000
 npm test               # 單元與 API 測試
 ```
@@ -24,7 +24,8 @@ npm test               # 單元與 API 測試
 |---|---|
 | `PORT` | 預設 3000 |
 | `ADMIN_PASSWORD` | **首次啟動**時建立初始管理員 `admin` 的密碼，預設 `admin`。之後密碼存在資料檔中，改這個變數不會再生效 |
-| `DATA_FILE` | 資料檔路徑，預設 `data/db.json` |
+| `DB_FILE` | SQLite 資料庫檔路徑，預設 `data/bookinglunch.db` |
+| `DATA_FILE` | 舊版 JSON 資料檔路徑（預設 `data/db.json`）。只用於第一次啟動時自動搬遷，見「資料儲存」 |
 | `QR_SECRET` | 動態取餐碼的簽章金鑰（伺服器端）。未設定時每次啟動隨機產生，舊碼重啟後失效（最多影響 60 秒）。多台伺服器共用時必須設成相同值 |
 | `LINE_LOGIN_CHANNEL_ID` | LINE Login channel 的 Channel ID。設定後自動切換為 LINE 登入模式 |
 | `LIFF_ID` | LIFF 應用的 ID（形如 `1234567890-AbCdEfGh`）。LINE 模式必填 |
@@ -41,22 +42,23 @@ docker compose up -d --build
 ```
 
 - `QR_SECRET` 建議用 `openssl rand -hex 32` 產生。`ADMIN_PASSWORD` 只在**第一次啟動**建立 `admin` 時使用。
-- 訂單、員工名單、帳號都存在具名 volume `bookinglunch-data`（容器內 `/data/db.json`），**重新部署或重建容器不會遺失，但請定期備份**。
-- **只能跑一個實例**：資料存在單一 JSON 檔，登入狀態在記憶體中，不要設定多個 replica。容器重啟後後台管理員需重新登入（LINE 員工會自動重新登入，取餐口平板會自動重新上線）。
+- 訂單、員工名單、帳號都存在具名 volume `bookinglunch-data`（容器內 `/data/bookinglunch.db`），**重新部署或重建容器不會遺失，但請定期備份**。
+- **只能跑一個實例**：資料庫是單一 SQLite 檔，登入狀態在記憶體中，不要設定多個 replica。容器重啟後後台管理員需重新登入（LINE 員工會自動重新登入，取餐口平板會自動重新上線）。
 - **LIFF 需要 HTTPS**：容器本身只提供 HTTP，請在前面放反向代理（Nginx、Caddy、公司的負載平衡器等）終止 TLS 後轉發到 3000 埠。
 
 常用指令（先停止服務再操作資料，避免記憶體中的狀態覆蓋檔案）：
 
 ```bash
-# 載入展示資料（會覆寫 /data/db.json，僅限展示環境）
+# 載入展示資料（會清空資料庫，僅限展示環境）
 docker compose stop app && docker compose run --rm app node scripts/seed.js && docker compose start app
 
 # 忘記系統管理員密碼
 docker compose stop app && docker compose run --rm app node scripts/reset-admin.js admin 新密碼 && docker compose start app
 
-# 備份資料
-docker run --rm -v bookinglunch_bookinglunch-data:/data -v "$PWD":/backup alpine \
-  tar czf /backup/bookinglunch-data-$(date +%F).tgz -C /data .
+# 備份資料（服務運作中也能執行，取得一致的完整快照，存在 volume 內的 /data/backups/）
+docker compose exec app node scripts/backup.js
+# 把備份檔複製出來
+docker compose cp app:/data/backups ./backups
 
 # 查看記錄
 docker compose logs -f app
@@ -99,9 +101,43 @@ docker compose logs -f app
 
 **委託代領**不變：仍須代領人輸入自己的員編，且必須與訂餐人指定的相符。
 
+## 資料儲存（SQLite）
+
+資料存在單一 SQLite 檔（Node 內建的 `node:sqlite`，不需另外安裝或編譯；需要 Node 22 以上）。相較先前的 JSON 檔：
+
+- **當機或斷電不會損毀資料**：使用預寫式日誌（WAL）與交易，寫到一半中斷只會回到上一個完整狀態；每個操作（訂餐、取餐、轉讓、匯入…）是一個交易，失敗整筆回復。
+- **資料庫層的最後防線**：同一人同一天同一餐別只能有一筆有效訂單；一個員編只能綁一個 LINE 帳號；訂單必須屬於存在的員工。
+- 可用任何 SQLite 工具直接檢視或查詢（建議唯讀開啟）。資料表：`employees`、`bindings`、`admins`、`kiosks`、`menu_items`、`orders`、`exemptions`、`history`、`config`。
+
+**備份**：`node scripts/backup.js [目的檔]`（預設寫到資料庫旁的 `backups/`）。伺服器運作中也能執行。**不要直接複製運作中的 `.db` 檔**，最新資料可能還在 `-wal` 檔裡。還原時停止伺服器，把備份檔放回 `DB_FILE` 指定的位置，並刪除舊的 `-wal`、`-shm` 檔。
+
+**從舊版 JSON 搬遷**：若先前用過 JSON 版（`data/db.json`），第一次以新版啟動時，資料庫是空的、舊檔還在，會自動搬進 SQLite，舊檔改名為 `db.json.migrated` 保留（不刪除）。搬遷在同一個交易內，失敗會整筆回復並中止啟動。也可手動執行 `node scripts/migrate-json.js <舊檔> [資料庫檔]`。
+
+## Excel 匯入與匯出
+
+後台各處都能直接用 Excel（`.xlsx`），不需要先轉成 CSV。
+
+| 功能 | 位置 | 權限 |
+|---|---|---|
+| 匯入員工名單（含範本下載） | 員工名單 | 員工名單管理 |
+| 匯出員工名單（含 LINE 綁定狀態，不含驗證碼） | 員工名單 | 員工名單管理 |
+| 匯入整月菜單（含範本下載） | 菜單管理 | 維護菜單 |
+| 匯出某月菜單（格式同匯入，可改完再匯入） | 菜單管理 | 查看報表 |
+| 匯出訂單明細＋每日統計（任意區間，最長一年） | 當日報表 | 匯出扣款清單 |
+| 匯出某日未取餐扣款清單（含合計，給人事） | 當日報表 | 匯出扣款清單 |
+
+**匯入規則**
+- **員工名單**：必要欄位「員工編號」「姓名」（也認「員工代號」「工號」）；選填「部門」或「部門代號」＋「部門名稱」、「驗證碼」。員編欄是數字格式時自動補零（`10412` → `010412`）。有問題的列會略過並回報**與 Excel 一致的列號**，其餘照常匯入。
+- **菜單**：必要欄位「日期」「餐別」「品名」「定價」；選填「主菜」「配菜」（頓號或逗號分隔）「蔬菜／湯品」「特殊商品」（★／是）。日期可以是 Excel 日期或 `YYYY-MM-DD`、`YYYY/M/D` 文字；餐別可寫午餐／晚餐／lunch／dinner。檔案裡出現的每一天，當天菜單**整天取代**；**有任何一列錯誤時整份都不匯入**，並列出每一列的問題。
+- 活頁簿有多個工作表時，優先讀名為「員工名單」或「菜單」的工作表，否則讀第一個未隱藏的。
+
+**匯出的安全處理**：文字一律存成字串儲存格，開頭是 `=`、`+`、`-`、`@` 的內容也只會被當成文字，不會被 Excel 當成公式執行（CSV 匯出同樣會加單引號防護）；員編欄設為文字格式，保留前導零。
+
+**上傳檔案的防護**：大小上限 10 MB；解壓縮後過大（zip 炸彈）、列數過多、含 `DOCTYPE`／`ENTITY` 的 XML（實體膨脹攻擊）、舊版 `.xls`、有密碼保護的檔案都會被拒絕，並回報清楚的訊息。
+
 ## 員編與員工名單
 
-- 公司員編為 6 碼、開頭可能是 0（如 `012003`）。Excel 把員編存成數字再另存 CSV，會變成 `12003`。**系統會把純數字員編自動補零到「員編位數」（預設 6）**，匯入、登入、綁定、轉讓、委託、取餐口輸入都一致處理；含字母的員編（如 `E001`）不受影響。後台可調整位數（0 = 不補）。
+- 公司員編為 6 碼、開頭可能是 0（如 `012003`）。Excel 把員編存成數字再匯出，會變成 `12003`。**系統會把純數字員編自動補零到「員編位數」（預設 6）**，匯入、登入、綁定、轉讓、委託、取餐口輸入都一致處理；含字母的員編（如 `E001`）不受影響。後台可調整位數（0 = 不補）。
 - 匯入後會提示「有 N 筆員編已自動補零」。仍建議把 Excel 員編欄位設成「文字」格式再匯出。
 - 部門可以放單一「部門」欄，或公司匯出的「部門代號」＋「部門名稱」兩欄（會合併成 `2100 資訊中心`）。
 
@@ -158,6 +194,7 @@ docker compose logs -f app
 - 動態碼的 QR 圖片仍由 cdnjs 的 qrcode-generator 產生；離線時退回顯示碼的文字內容，條碼槍或手動貼上也能使用。
 - LIFF 登入已用模擬的 LINE 驗證服務測過，**尚未用真實 LINE channel 驗證**。
 - 不使用 LINE Official Account，因此沒有推播提醒；未取餐通知管道尚未決定。
-- 儲存為單一 JSON 檔，適合展示，正式上線需換成資料庫。
-- 員工名單匯入只支援 CSV（Excel／鼎新匯出後另存 CSV）；歷史訂餐匯入與薪資扣款串接尚未實作。
+- 資料庫是單一 SQLite 檔，適合這個規模（千人、每天約 200 份）；仍只能單一實例執行，不能水平擴充。
+- Excel 讀寫已用 openpyxl 產生與讀取的檔案、以及本系統自己產生的檔案驗證過，**尚未用真實的 Excel、WPS 或鼎新匯出檔實測**；第一次請用你們實際的檔案試匯入一次。只支援 `.xlsx`，不支援舊版 `.xls`。
+- 歷史訂餐匯入與薪資扣款串接尚未實作。
 - 三個角色是依一般慣例預設的（管理員人數與實際分工尚未確認），權限分配隨時可在 `src/permissions.js` 調整。

@@ -1,7 +1,9 @@
 # 訂餐系統（Node.js 22）。只有純 JavaScript 依賴，不需要編譯工具。
 FROM node:22-alpine
 
+# node:sqlite 在 Node 22 仍標示為實驗性功能，關閉它的警告訊息（也涵蓋 docker exec 執行的腳本）
 ENV NODE_ENV=production \
+    NODE_OPTIONS=--disable-warning=ExperimentalWarning \
     PORT=3000 \
     DB_FILE=/data/bookinglunch.db \
     DATA_FILE=/data/db.json
@@ -26,5 +28,4 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-# node:sqlite 在 Node 22 仍標示為實驗性功能，關閉啟動時的警告訊息
-CMD ["node", "--disable-warning=ExperimentalWarning", "src/server.js"]
+CMD ["node", "src/server.js"]
