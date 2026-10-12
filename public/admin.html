@@ -55,13 +55,16 @@
       <section id="tab-employees" class="hidden">
         <div class="card">
           <h2>匯入員工名單（CSV）</h2>
-          <p class="muted">標題列需包含「員工編號」「姓名」，可選「部門」。Excel 或鼎新匯出後另存為 CSV（UTF-8）即可。相同員編會更新。</p>
+          <p class="muted">標題列需包含「員工編號」「姓名」，可選「部門」「驗證碼」。「驗證碼」是員工首次綁定 LINE 時要多輸入的資料（例如生日月日或分機），可防止他人只憑員編與姓名冒綁；留空則只比對員編與姓名。Excel 或鼎新匯出後另存為 CSV（UTF-8）即可。相同員編會更新。</p>
           <input type="file" id="csvFile" accept=".csv,text/csv">
           <div class="field" style="margin-top:10px"><label for="csvText">或直接貼上內容</label>
             <textarea id="csvText" placeholder="員工編號,姓名,部門&#10;E001,王小明,行政"></textarea></div>
           <button id="importBtn" class="primary">匯入</button>
           <div id="importMsg" class="notice info hidden" style="margin-top:12px"></div>
         </div>
+        <div class="card"><h2>LINE 綁定</h2>
+          <p class="muted">員工換手機或帳號被他人綁定時，解除綁定後請對方重新開啟頁面綁定一次。</p>
+          <div id="bindingList"></div></div>
         <div class="card"><h2>目前名單</h2><div id="employeeList"></div></div>
       </section>
 

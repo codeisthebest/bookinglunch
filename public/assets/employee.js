@@ -7,6 +7,9 @@
   let state = null; // /api/menu/today 結果
   let tab = 'menu';
   let selectedDate = null; // null = 今天
+  let config = { authMode: 'mock', liffId: null };
+  let bindToken = null;
+  const LIFF_SDK = 'https://static.line-scdn.net/liff/edge/2/sdk.js';
 
   function loadSession() {
     try {
@@ -17,6 +20,7 @@
   }
 
   function saveSession(value) {
+    if (config.authMode === 'line') return; // LINE 身分每次由 LIFF 驗證，不另存 token
     try {
       if (value) localStorage.setItem(STORE_KEY, JSON.stringify(value));
       else localStorage.removeItem(STORE_KEY);
@@ -25,11 +29,86 @@
     }
   }
 
-  // LIFF 整合點：正式版在這裡以 liff.getProfile().userId 比對綁定的員工編號，取代手動輸入。
+  // 模擬登入（mock 模式）：以員編比對名單
   async function login(employeeId) {
     const data = await request('POST', '/api/auth/employee', { body: { employeeId } });
     session = { token: data.token, employee: data.employee };
     saveSession(session);
+  }
+
+  function setView(name) {
+    ['login', 'loading', 'bind', 'app'].forEach((v) => $(v).classList.toggle('hidden', v !== name));
+  }
+
+  function loadLiffSdk() {
+    return new Promise((resolve, reject) => {
+      if (window.liff) return resolve();
+      const script = document.createElement('script');
+      script.src = LIFF_SDK;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error('無法載入 LINE 元件，請確認網路後重試'));
+      document.head.appendChild(script);
+      return undefined;
+    });
+  }
+
+  function showLoadError(message) {
+    setView('loading');
+    $('loadingMsg').textContent = message;
+    $('retryBtn').classList.remove('hidden');
+  }
+
+  // LIFF 登入：取得 LINE ID Token 交給伺服器驗證；未綁定員編者進入綁定畫面
+  async function startLine() {
+    setView('loading');
+    $('loadingMsg').textContent = '登入中…';
+    $('retryBtn').classList.add('hidden');
+    try {
+      await loadLiffSdk();
+      await window.liff.init({ liffId: config.liffId });
+      if (!window.liff.isLoggedIn()) {
+        window.liff.login(); // 會導向 LINE 授權後回到本頁
+        return;
+      }
+      const idToken = window.liff.getIDToken();
+      if (!idToken) throw new Error('取不到 LINE 身分，請確認 LIFF 已開啟 openid 權限');
+      const data = await request('POST', '/api/auth/line', { body: { idToken } });
+      if (data.status === 'ok') {
+        session = { token: data.token, employee: data.employee };
+        show();
+      } else {
+        bindToken = data.bindToken;
+        $('bindLineName').textContent = data.displayName || '';
+        setView('bind');
+      }
+    } catch (err) {
+      showLoadError(err.message);
+    }
+  }
+
+  async function submitBind() {
+    const msg = $('bindMsg');
+    msg.classList.add('hidden');
+    try {
+      const data = await request('POST', '/api/auth/line/bind', {
+        body: {
+          bindToken,
+          employeeId: $('bindEmployeeId').value.trim(),
+          name: $('bindName').value.trim(),
+          verification: $('bindVerify').value.trim(),
+        },
+      });
+      session = { token: data.token, employee: data.employee };
+      toast('綁定完成');
+      show();
+    } catch (err) {
+      if (err.status === 401) {
+        startLine(); // 綁定憑證逾時，重新取得
+        return;
+      }
+      msg.textContent = err.message;
+      msg.classList.remove('hidden');
+    }
   }
 
   function logout() {
@@ -57,10 +136,15 @@
   }
 
   function show() {
-    $('login').classList.toggle('hidden', Boolean(session));
-    $('app').classList.toggle('hidden', !session);
     $('who').textContent = session ? `${session.employee.name}（${session.employee.id}）` : '';
-    if (session) refresh().catch((e) => toast(e.message));
+    if (session) {
+      setView('app');
+      refresh().catch((e) => toast(e.message));
+    } else if (config.authMode === 'line') {
+      startLine();
+    } else {
+      setView('login');
+    }
   }
 
   // ---------- 畫面 ----------
@@ -260,6 +344,20 @@
   });
   $('logoutBtn').addEventListener('click', logout);
 
-  session = loadSession();
-  show();
+  $('bindBtn').addEventListener('click', submitBind);
+  $('retryBtn').addEventListener('click', startLine);
+
+  (async function init() {
+    try {
+      config = await request('GET', '/api/config');
+    } catch (_) {
+      config = { authMode: 'mock', liffId: null };
+    }
+    if (config.authMode === 'line') {
+      $('logoutBtn').classList.add('hidden'); // LINE 身分即登入，不提供登出
+    } else {
+      session = loadSession();
+    }
+    show();
+  })();
 })();

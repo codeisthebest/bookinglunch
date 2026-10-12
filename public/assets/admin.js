@@ -53,6 +53,7 @@
       loadReport();
       loadMenu();
       loadEmployees();
+      loadBindings();
       loadConfig();
     }
   }
@@ -164,9 +165,24 @@
       const list = await api('GET', '/api/admin/employees');
       $('employeeList').innerHTML = list.length === 0
         ? '<p class="muted">尚未匯入員工名單</p>'
-        : `<p class="muted">共 ${list.length} 人</p><table><tr><th>員編</th><th>姓名</th><th>部門</th></tr>${
-          list.slice(0, 200).map((e) => `<tr><td>${esc(e.id)}</td><td>${esc(e.name)}</td><td>${esc(e.dept)}</td></tr>`).join('')
+        : `<p class="muted">共 ${list.length} 人</p><table><tr><th>員編</th><th>姓名</th><th>部門</th><th>LINE</th></tr>${
+          list.slice(0, 200).map((e) => `<tr><td>${esc(e.id)}</td><td>${esc(e.name)}</td><td>${esc(e.dept)}</td><td>${e.bound ? '<span class="pill ok">已綁定</span>' : '<span class="pill">未綁定</span>'}</td></tr>`).join('')
         }</table>${list.length > 200 ? '<p class="muted">僅顯示前 200 筆</p>' : ''}`;
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  async function loadBindings() {
+    try {
+      const list = await api('GET', '/api/admin/bindings');
+      $('bindingList').innerHTML = list.length === 0
+        ? '<p class="muted">目前沒有已綁定的 LINE 帳號</p>'
+        : `<table><tr><th>員編</th><th>姓名</th><th>LINE 名稱</th><th>綁定時間</th><th></th></tr>${
+          list.map((b) => `<tr><td>${esc(b.employeeId)}</td><td>${esc(b.employeeName)}</td><td>${esc(b.displayName)}</td>
+            <td>${esc(new Date(b.boundAt).toLocaleString('zh-TW'))}</td>
+            <td><button class="danger" data-unbind="${esc(b.lineUserId)}">解除綁定</button></td></tr>`).join('')
+        }</table>`;
     } catch (err) {
       fail(err);
     }
@@ -219,6 +235,12 @@
     if (t.dataset.tab) {
       ['report', 'menu', 'employees', 'settings'].forEach((n) => $(`tab-${n}`).classList.toggle('hidden', n !== t.dataset.tab));
       document.querySelectorAll('.tabs button').forEach((b) => b.setAttribute('aria-selected', String(b === t)));
+    } else if (t.dataset.unbind) {
+      if (confirm('確定解除這個 LINE 帳號的綁定？對方需要重新綁定才能使用。')) {
+        api('DELETE', `/api/admin/bindings/${encodeURIComponent(t.dataset.unbind)}`)
+          .then(() => { toast('已解除綁定'); loadBindings(); loadEmployees(); })
+          .catch(fail);
+      }
     } else if (t.dataset.remove !== undefined) {
       menuItems.splice(Number(t.dataset.remove), 1);
       renderMenuRows();

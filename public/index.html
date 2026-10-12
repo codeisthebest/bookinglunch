@@ -14,7 +14,7 @@
   </header>
 
   <main>
-    <!-- 登入（原型以員編模擬 LIFF 綁定；正式版改為 LINE 登入） -->
+    <!-- 模擬登入：僅在未啟用 LINE 登入（mock 模式）時使用 -->
     <section id="login" class="card hidden">
       <h2>登入</h2>
       <p class="muted">請輸入您的員工編號。僅限公司內部員工使用。</p>
@@ -24,6 +24,22 @@
       </div>
       <button id="loginBtn" class="primary" style="width:100%">登入</button>
       <div id="loginMsg" class="notice danger hidden" style="margin-top:12px"></div>
+    </section>
+
+    <section id="loading" class="card hidden">
+      <p id="loadingMsg" class="muted">登入中…</p>
+      <button id="retryBtn" class="hidden">重試</button>
+    </section>
+
+    <!-- 首次使用：把 LINE 帳號綁定到員工身分（只需一次） -->
+    <section id="bind" class="card hidden">
+      <h2>首次使用：綁定員工身分</h2>
+      <p class="muted">LINE 帳號「<span id="bindLineName"></span>」尚未綁定。請輸入員工編號與姓名，僅限內部員工使用，綁定後下次自動登入。</p>
+      <div class="field"><label for="bindEmployeeId">員工編號</label><input id="bindEmployeeId" autocomplete="off"></div>
+      <div class="field"><label for="bindName">姓名</label><input id="bindName" autocomplete="off"></div>
+      <div class="field"><label for="bindVerify">驗證碼（若公司有提供才需填寫）</label><input id="bindVerify" autocomplete="off"></div>
+      <button id="bindBtn" class="primary" style="width:100%">確認綁定</button>
+      <div id="bindMsg" class="notice danger hidden" style="margin-top:12px"></div>
     </section>
 
     <section id="app" class="hidden">

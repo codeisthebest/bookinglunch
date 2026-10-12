@@ -76,6 +76,7 @@ function createService(store) {
     id: ['員工編號', '員編', 'employee_id', 'employeeid', 'id'],
     name: ['姓名', 'name'],
     dept: ['部門', 'dept', 'department'],
+    verify: ['驗證碼', 'verify', 'verification', 'verify_code'],
   };
 
   function findColumn(headers, key) {
@@ -92,6 +93,7 @@ function createService(store) {
       id: findColumn(headers, 'id'),
       name: findColumn(headers, 'name'),
       dept: findColumn(headers, 'dept'),
+      verify: findColumn(headers, 'verify'),
     };
     if (cols.id === undefined || cols.name === undefined) {
       throw new AppError(400, '標題列需包含「員工編號」與「姓名」欄位');
@@ -105,6 +107,7 @@ function createService(store) {
       const id = (row[cols.id] || '').trim();
       const name = (row[cols.name] || '').trim();
       const dept = cols.dept === undefined ? '' : (row[cols.dept] || '').trim();
+      const verify = cols.verify === undefined ? '' : (row[cols.verify] || '').trim();
       if (!id || !name) {
         errors.push({ line, message: '員工編號或姓名為空' });
         return;
@@ -114,7 +117,9 @@ function createService(store) {
       } else {
         created += 1;
       }
-      store.db.employees[id] = { id, name, dept };
+      const record = { id, name, dept };
+      if (verify) record.verify = verify;
+      store.db.employees[id] = record;
     });
 
     store.save();
@@ -122,12 +127,103 @@ function createService(store) {
     return { created, updated, errors, total: Object.keys(store.db.employees).length };
   }
 
+  function boundEmployeeIds() {
+    return new Set(Object.values(store.db.bindings).map((b) => b.employeeId));
+  }
+
+  // 管理端列表不回傳驗證碼本身，只標示有無，以及是否已綁定 LINE
   function listEmployees() {
-    return Object.values(store.db.employees).sort((a, b) => a.id.localeCompare(b.id));
+    const bound = boundEmployeeIds();
+    return Object.values(store.db.employees)
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map(({ verify, ...rest }) => ({ ...rest, hasVerify: Boolean(verify), bound: bound.has(rest.id) }));
+  }
+
+  // 對外（員工頁、取餐口）只提供安全欄位，避免驗證碼外流
+  function publicEmployee(employee) {
+    if (!employee) return null;
+    return { id: employee.id, name: employee.name, dept: employee.dept };
   }
 
   function getEmployee(id) {
-    return store.db.employees[id] || null;
+    return publicEmployee(store.db.employees[id]);
+  }
+
+  // ---------- LINE 帳號綁定 ----------
+
+  const MAX_BIND_FAILURES = 5;
+  const BIND_LOCK_MS = 15 * 60 * 1000;
+  const bindFailures = new Map(); // lineUserId -> { count, until }
+
+  function findBinding(lineUserId) {
+    const binding = store.db.bindings[lineUserId];
+    return binding ? getEmployee(binding.employeeId) : null;
+  }
+
+  function bindEmployee({ lineUserId, displayName, employeeId, name, verification }) {
+    if (!lineUserId) throw new AppError(400, '缺少 LINE 身分');
+    const failure = bindFailures.get(lineUserId);
+    if (failure && failure.until > Date.now()) {
+      throw new AppError(429, '嘗試次數過多，請 15 分鐘後再試，或洽行政人員協助');
+    }
+
+    const id = String(employeeId || '').trim();
+    const record = store.db.employees[id];
+    const nameOk = record && String(name || '').trim() === record.name;
+    const verifyOk = record && (!record.verify || String(verification || '').trim() === record.verify);
+    if (!record || !nameOk || !verifyOk) {
+      // 上一輪鎖定已過期就重新計數；尚未鎖定（until 為 0）則累計
+      const lockExpired = failure && failure.until > 0 && failure.until <= Date.now();
+      const count = (failure && !lockExpired ? failure.count : 0) + 1;
+      bindFailures.set(lineUserId, { count, until: count >= MAX_BIND_FAILURES ? Date.now() + BIND_LOCK_MS : 0 });
+      // 不透露是哪個欄位不符，避免被用來猜測員編
+      throw new AppError(403, record && record.verify
+        ? '員工編號、姓名或驗證碼不符，請再確認'
+        : '員工編號或姓名不符，請再確認');
+    }
+
+    const existing = Object.entries(store.db.bindings).find(([, b]) => b.employeeId === id);
+    if (existing && existing[0] !== lineUserId) {
+      throw new AppError(409, '此員工編號已綁定其他 LINE 帳號，如需更換請洽行政人員解除綁定');
+    }
+    // 同一個 LINE 帳號換綁別的員編也不允許，避免一個帳號冒用多人
+    const current = store.db.bindings[lineUserId];
+    if (current && current.employeeId !== id) {
+      throw new AppError(409, '此 LINE 帳號已綁定其他員工，如需更換請洽行政人員解除綁定');
+    }
+
+    store.db.bindings[lineUserId] = {
+      employeeId: id,
+      displayName: displayName || '',
+      boundAt: new Date().toISOString(),
+    };
+    bindFailures.delete(lineUserId);
+    store.save();
+    log('binding.create', { employeeId: id, lineUserId });
+    return getEmployee(id);
+  }
+
+  function listBindings() {
+    return Object.entries(store.db.bindings).map(([lineUserId, b]) => {
+      const employee = getEmployee(b.employeeId);
+      return {
+        lineUserId,
+        displayName: b.displayName,
+        employeeId: b.employeeId,
+        employeeName: employee ? employee.name : '',
+        boundAt: b.boundAt,
+      };
+    });
+  }
+
+  function unbind(lineUserId) {
+    const binding = store.db.bindings[lineUserId];
+    if (!binding) throw new AppError(404, '找不到此綁定');
+    delete store.db.bindings[lineUserId];
+    bindFailures.delete(lineUserId);
+    store.save();
+    log('binding.remove', { employeeId: binding.employeeId, lineUserId });
+    return { removed: true };
   }
 
   function requireEmployee(id) {
@@ -516,6 +612,10 @@ function createService(store) {
     importEmployees,
     listEmployees,
     getEmployee,
+    findBinding,
+    bindEmployee,
+    listBindings,
+    unbind,
     getMenu,
     setMenu,
     menuForDate,

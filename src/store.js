@@ -12,7 +12,8 @@ function emptyDb() {
       orderCutoff: '10:00', // 每日統一截止時間（暫定，後台可改）
       subsidy: 33, // 公司補貼金額（元）
     },
-    employees: {}, // { [employeeId]: { id, name, dept } }
+    employees: {}, // { [employeeId]: { id, name, dept, verify? } }
+    bindings: {}, // { [lineUserId]: { employeeId, displayName, boundAt } }
     menus: {}, // { [date]: [{ id, meal, name, price }] }
     orders: [], // 見 service.js createOrder
     exemptions: {}, // { [date]: { [employeeId]: reason } }
@@ -25,6 +26,7 @@ function createStore(file = process.env.DATA_FILE || DEFAULT_FILE) {
   let db;
   if (file && fs.existsSync(file)) {
     db = JSON.parse(fs.readFileSync(file, 'utf8'));
+    db.bindings = db.bindings || {}; // 舊版資料檔沒有這個欄位
   } else {
     db = emptyDb();
   }
