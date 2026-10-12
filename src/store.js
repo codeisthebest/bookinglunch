@@ -14,6 +14,7 @@ function emptyDb() {
     },
     employees: {}, // { [employeeId]: { id, name, dept, verify? } }
     bindings: {}, // { [lineUserId]: { employeeId, displayName, boundAt } }
+    admins: {}, // { [username]: { username, displayName, role, active, salt, hash, createdAt } }
     menus: {}, // { [date]: [{ id, meal, name, price }] }
     orders: [], // 見 service.js createOrder
     exemptions: {}, // { [date]: { [employeeId]: reason } }
@@ -26,7 +27,8 @@ function createStore(file = process.env.DATA_FILE || DEFAULT_FILE) {
   let db;
   if (file && fs.existsSync(file)) {
     db = JSON.parse(fs.readFileSync(file, 'utf8'));
-    db.bindings = db.bindings || {}; // 舊版資料檔沒有這個欄位
+    db.bindings = db.bindings || {}; // 舊版資料檔沒有這些欄位
+    db.admins = db.admins || {};
   } else {
     db = emptyDb();
   }

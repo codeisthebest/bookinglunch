@@ -10,32 +10,48 @@
 <body>
   <header class="top">
     <h1>訂餐管理後台</h1>
-    <button id="logoutBtn" class="hidden">登出</button>
+    <div id="adminBar" style="display:flex;align-items:center;gap:8px" hidden>
+      <span id="adminWho" class="muted"></span>
+      <button id="pwBtn">改密碼</button>
+      <button id="logoutBtn">登出</button>
+    </div>
   </header>
 
   <main>
     <section id="login" class="card hidden">
       <h2>管理員登入</h2>
-      <div class="field"><label for="password">密碼</label><input id="password" type="password"></div>
+      <div class="field"><label for="username">帳號</label><input id="username" autocomplete="username" value="admin"></div>
+      <div class="field"><label for="password">密碼</label><input id="password" type="password" autocomplete="current-password"></div>
       <button id="loginBtn" class="primary">登入</button>
       <div id="loginMsg" class="notice danger hidden" style="margin-top:12px"></div>
     </section>
 
     <section id="app" class="hidden">
+      <!-- data-perm：沒有該權限的帳號看不到這個元素；伺服器端仍會再檢查一次 -->
       <nav class="tabs">
-        <button data-tab="report" aria-selected="true">當日報表</button>
-        <button data-tab="menu" aria-selected="false">菜單管理</button>
-        <button data-tab="employees" aria-selected="false">員工名單</button>
-        <button data-tab="settings" aria-selected="false">系統設定</button>
+        <button data-tab="report" data-perm="report.view" aria-selected="true">當日報表</button>
+        <button data-tab="menu" data-perm="report.view" aria-selected="false">菜單管理</button>
+        <button data-tab="employees" data-perm="employees.manage" aria-selected="false">員工名單</button>
+        <button data-tab="settings" data-perm="config.edit" aria-selected="false">系統設定</button>
+        <button data-tab="admins" data-perm="admins.manage" aria-selected="false">管理員帳號</button>
       </nav>
 
       <section id="tab-report">
         <div class="card row">
           <div><label for="reportDate">日期</label><input id="reportDate" type="date"></div>
           <div style="display:flex;gap:8px"><button id="reportBtn" class="primary">查詢</button>
-            <button id="exportBtn">匯出扣款清單 CSV</button></div>
+            <button id="exportBtn" data-perm="report.export">匯出扣款清單 CSV</button></div>
         </div>
         <div id="reportBody"></div>
+        <div class="card" data-perm="deduction.manage">
+          <h2>例外名單（出差、請假免扣）</h2>
+          <div class="row" style="align-items:flex-end">
+            <div style="flex:1"><label for="exDate">日期</label><input id="exDate" type="date"></div>
+            <div style="flex:1"><label for="exEmp">員工編號</label><input id="exEmp"></div>
+            <div style="flex:1"><label for="exReason">原因</label><input id="exReason" placeholder="出差"></div>
+            <button id="exAdd">加入</button>
+          </div>
+        </div>
       </section>
 
       <section id="tab-menu" class="hidden">
@@ -44,8 +60,9 @@
             <div><label for="menuDate">菜單日期</label><input id="menuDate" type="date"></div>
             <button id="menuLoad">載入</button>
           </div>
+          <p id="menuReadonly" class="muted" hidden style="margin-top:8px">此帳號只有檢視權限，無法修改菜單。</p>
           <div id="menuRows" style="margin-top:12px"></div>
-          <div style="display:flex;gap:8px;margin-top:12px">
+          <div style="display:flex;gap:8px;margin-top:12px" data-perm="menu.edit">
             <button id="menuAdd">＋ 新增品項</button>
             <button id="menuSave" class="primary">儲存菜單</button>
           </div>
@@ -71,18 +88,9 @@
       <section id="tab-settings" class="hidden">
         <div class="card">
           <h2>訂餐設定</h2>
-          <div class="field"><label for="cutoff">每日截止時間（HH:mm）</label><input id="cutoff" placeholder="09:00"></div>
+          <div class="field"><label for="cutoff">每日截止時間（HH:mm）</label><input id="cutoff" placeholder="10:00"></div>
           <div class="field"><label for="subsidy">公司補貼金額（元）</label><input id="subsidy" inputmode="numeric"></div>
           <button id="configSave" class="primary">儲存設定</button>
-        </div>
-        <div class="card">
-          <h2>例外名單（出差、請假免扣）</h2>
-          <div class="row" style="align-items:flex-end">
-            <div style="flex:1"><label for="exDate">日期</label><input id="exDate" type="date"></div>
-            <div style="flex:1"><label for="exEmp">員工編號</label><input id="exEmp"></div>
-            <div style="flex:1"><label for="exReason">原因</label><input id="exReason" placeholder="出差"></div>
-            <button id="exAdd">加入</button>
-          </div>
         </div>
         <div class="card">
           <h2>展示用：模擬時間</h2>
@@ -93,6 +101,20 @@
             <button id="clockClear">恢復系統時間</button>
           </div>
         </div>
+      </section>
+
+      <section id="tab-admins" class="hidden">
+        <div class="card">
+          <h2>新增管理員</h2>
+          <div class="field"><label for="newUsername">帳號（小寫英數字、點、底線、連字號，3–32 字元）</label><input id="newUsername" autocomplete="off"></div>
+          <div class="field"><label for="newDisplayName">顯示名稱</label><input id="newDisplayName" autocomplete="off"></div>
+          <div class="field"><label for="newRole">角色</label><select id="newRole"></select></div>
+          <div class="field"><label for="newPassword">初始密碼（至少 8 個字元）</label><input id="newPassword" type="password" autocomplete="new-password"></div>
+          <button id="adminAdd" class="primary">建立帳號</button>
+          <div id="roleHelp" class="muted" style="margin-top:12px"></div>
+        </div>
+        <div class="card"><h2>管理員帳號</h2><div id="adminList"></div></div>
+        <div class="card"><h2>操作紀錄（最近 200 筆）</h2><div id="auditList"></div></div>
       </section>
     </section>
   </main>

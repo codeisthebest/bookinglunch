@@ -26,6 +26,20 @@ function createService(store) {
     if (store.db.history.length > 2000) store.db.history.splice(0, 500);
   }
 
+  // 後台操作紀錄：只記誰、對哪個路徑做了什麼方法，不記請求內容（避免寫入密碼）
+  function audit(actor, method, requestPath) {
+    log('admin.request', { actor, method, path: requestPath });
+    store.save();
+  }
+
+  function listAudit(limit = 200) {
+    return store.db.history
+      .filter((h) => h.action === 'admin.request')
+      .slice(-limit)
+      .reverse()
+      .map((h) => ({ at: h.at, ...h.detail }));
+  }
+
   // ---------- 時間與截止判斷 ----------
 
   function orderingStatus(date) {
@@ -632,6 +646,8 @@ function createService(store) {
     dayReport,
     dayOrders,
     orderingStatus,
+    audit,
+    listAudit,
   };
 }
 

@@ -166,7 +166,7 @@ td.num, th.num { text-align: right; white-space: nowrap; }
 .stat .n { font-size: 24px; font-weight: 700; }
 .stat .l { font-size: 13px; color: var(--muted); }
 
-.hidden { display: none !important; }
+.hidden, [hidden] { display: none !important; }
 
 .toast {
   position: fixed;

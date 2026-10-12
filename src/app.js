@@ -6,6 +6,8 @@ const express = require('express');
 const { createService, AppError } = require('./service');
 const { getClock, setClock, taipeiNow } = require('./time');
 const { toCsv } = require('./csv');
+const { createAdminService } = require('./admins');
+const { ROLES, PERMISSIONS, permissionsOf, hasPermission } = require('./permissions');
 
 const LINE_VERIFY_URL = 'https://api.line.me/oauth2/v2.1/verify';
 const PENDING_BIND_MS = 10 * 60 * 1000;
@@ -46,6 +48,8 @@ function resolveAuth(options = {}) {
 
 function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin', auth } = {}) {
   const service = createService(store);
+  const adminService = createAdminService(store);
+  adminService.ensureBootstrap(adminPassword);
   const authConfig = resolveAuth(auth);
   const sessions = new Map(); // token -> { role, employeeId?, expires? }
 
@@ -81,10 +85,45 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
     return next();
   }
 
-  function requireAdmin(req, res, next) {
-    const session = getSession(bearer(req));
-    if (!session || session.role !== 'admin') return res.status(401).json({ error: '請以管理員身分登入' });
-    return next();
+  // 後台權限檢查：每次請求都重新讀取帳號，所以停用或調整角色會立即生效。
+  // permission 為 null 時，只要是啟用中的管理員即可。
+  function guard(permission) {
+    return (req, res, next) => {
+      const token = bearer(req);
+      const session = getSession(token);
+      if (!session || session.role !== 'admin') return res.status(401).json({ error: '請以管理員身分登入' });
+      const admin = adminService.getActive(session.username);
+      if (!admin) {
+        sessions.delete(token);
+        return res.status(401).json({ error: '帳號已停用或不存在' });
+      }
+      if (permission && !hasPermission(admin.role, permission)) {
+        return res.status(403).json({ error: '權限不足：此帳號無法執行這個操作' });
+      }
+      req.admin = admin;
+      if (req.method !== 'GET') {
+        res.on('finish', () => {
+          if (res.statusCode < 400) service.audit(admin.username, req.method, req.path);
+        });
+      }
+      return next();
+    };
+  }
+
+  function profileOf(admin) {
+    return {
+      username: admin.username,
+      displayName: admin.displayName,
+      role: admin.role,
+      roleLabel: ROLES[admin.role].label,
+      permissions: permissionsOf(admin.role),
+    };
+  }
+
+  function revokeAdminSessions(username) {
+    sessions.forEach((session, token) => {
+      if (session.role === 'admin' && session.username === username) sessions.delete(token);
+    });
   }
 
   // ---------- 登入 ----------
@@ -157,11 +196,14 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
     }
   });
 
-  app.post('/api/auth/admin', (req, res) => {
-    if (String(req.body.password || '') !== adminPassword) {
-      return res.status(401).json({ error: '密碼錯誤' });
+  // 管理員登入：帳號＋密碼；省略帳號時視為 admin（相容初始單一密碼的用法）
+  app.post('/api/auth/admin', (req, res, next) => {
+    try {
+      const admin = adminService.authenticate(req.body.username || 'admin', req.body.password);
+      res.json({ token: issue({ role: 'admin', username: admin.username }), admin: profileOf(admin) });
+    } catch (err) {
+      next(err);
     }
-    return res.json({ token: issue({ role: 'admin' }) });
   });
 
   app.get('/api/me', requireEmployee, (req, res, next) => {
@@ -257,9 +299,49 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
 
   // ---------- 管理端 ----------
 
-  app.get('/api/admin/config', requireAdmin, (req, res) => res.json(service.getConfig()));
+  app.get('/api/admin/me', guard(null), (req, res) => res.json(profileOf(req.admin)));
 
-  app.put('/api/admin/config', requireAdmin, (req, res, next) => {
+  app.post('/api/admin/me/password', guard(null), (req, res, next) => {
+    try {
+      adminService.changeOwnPassword(req.admin.username, req.body.oldPassword, req.body.newPassword);
+      res.json({ changed: true });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get('/api/admin/roles', guard('admins.manage'), (req, res) => {
+    res.json({
+      roles: Object.entries(ROLES).map(([key, r]) => ({ key, label: r.label, description: r.description, permissions: r.permissions })),
+      permissions: PERMISSIONS,
+    });
+  });
+
+  app.get('/api/admin/admins', guard('admins.manage'), (req, res) => res.json(adminService.list()));
+
+  app.post('/api/admin/admins', guard('admins.manage'), (req, res, next) => {
+    try {
+      res.status(201).json(adminService.create(req.body));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.put('/api/admin/admins/:username', guard('admins.manage'), (req, res, next) => {
+    try {
+      const { admin, revokeSessions } = adminService.update(req.params.username, req.body, req.admin.username);
+      if (revokeSessions) revokeAdminSessions(req.params.username);
+      res.json(admin);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get('/api/admin/audit', guard('admins.manage'), (req, res) => res.json(service.listAudit(200)));
+
+  app.get('/api/admin/config', guard('config.edit'), (req, res) => res.json(service.getConfig()));
+
+  app.put('/api/admin/config', guard('config.edit'), (req, res, next) => {
     try {
       res.json(service.updateConfig(req.body));
     } catch (err) {
@@ -267,12 +349,12 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
     }
   });
 
-  app.get('/api/admin/clock', requireAdmin, (req, res) => {
+  app.get('/api/admin/clock', guard('config.edit'), (req, res) => {
     const clock = getClock();
     res.json({ simulated: clock.simulated, at: clock.at.toISOString(), taipei: taipeiNow() });
   });
 
-  app.put('/api/admin/clock', requireAdmin, (req, res, next) => {
+  app.put('/api/admin/clock', guard('config.edit'), (req, res, next) => {
     try {
       setClock(req.body.now || null);
       const clock = getClock();
@@ -282,9 +364,9 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
     }
   });
 
-  app.get('/api/admin/employees', requireAdmin, (req, res) => res.json(service.listEmployees()));
+  app.get('/api/admin/employees', guard('employees.manage'), (req, res) => res.json(service.listEmployees()));
 
-  app.post('/api/admin/employees/import', requireAdmin, (req, res, next) => {
+  app.post('/api/admin/employees/import', guard('employees.manage'), (req, res, next) => {
     try {
       res.json(service.importEmployees(req.body.csv));
     } catch (err) {
@@ -292,9 +374,9 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
     }
   });
 
-  app.get('/api/admin/bindings', requireAdmin, (req, res) => res.json(service.listBindings()));
+  app.get('/api/admin/bindings', guard('employees.manage'), (req, res) => res.json(service.listBindings()));
 
-  app.delete('/api/admin/bindings/:lineUserId', requireAdmin, (req, res, next) => {
+  app.delete('/api/admin/bindings/:lineUserId', guard('employees.manage'), (req, res, next) => {
     try {
       const binding = service.listBindings().find((b) => b.lineUserId === req.params.lineUserId);
       const result = service.unbind(req.params.lineUserId);
@@ -310,9 +392,9 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
     }
   });
 
-  app.get('/api/admin/menu', requireAdmin, (req, res) => res.json(service.getMenu(String(req.query.date || ''))));
+  app.get('/api/admin/menu', guard('report.view'), (req, res) => res.json(service.getMenu(String(req.query.date || ''))));
 
-  app.put('/api/admin/menu', requireAdmin, (req, res, next) => {
+  app.put('/api/admin/menu', guard('menu.edit'), (req, res, next) => {
     try {
       res.json(service.setMenu(req.body.date, req.body.items));
     } catch (err) {
@@ -320,7 +402,7 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
     }
   });
 
-  app.get('/api/admin/report', requireAdmin, (req, res, next) => {
+  app.get('/api/admin/report', guard('report.view'), (req, res, next) => {
     try {
       res.json(service.dayReport(String(req.query.date || '')));
     } catch (err) {
@@ -328,7 +410,7 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
     }
   });
 
-  app.get('/api/admin/orders', requireAdmin, (req, res, next) => {
+  app.get('/api/admin/orders', guard('report.view'), (req, res, next) => {
     try {
       res.json(service.dayOrders(String(req.query.date || '')));
     } catch (err) {
@@ -336,7 +418,7 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
     }
   });
 
-  app.get('/api/admin/deductions.csv', requireAdmin, (req, res, next) => {
+  app.get('/api/admin/deductions.csv', guard('report.export'), (req, res, next) => {
     try {
       const report = service.dayReport(String(req.query.date || ''));
       const rows = [['日期', '員工編號', '姓名', '餐別', '品項', '應付金額', '扣款狀態']];
@@ -351,7 +433,7 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
     }
   });
 
-  app.put('/api/admin/deductions/:orderId', requireAdmin, (req, res, next) => {
+  app.put('/api/admin/deductions/:orderId', guard('deduction.manage'), (req, res, next) => {
     try {
       res.json(service.setDeductionStatus(req.params.orderId, req.body.status));
     } catch (err) {
@@ -359,7 +441,7 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
     }
   });
 
-  app.put('/api/admin/exemptions', requireAdmin, (req, res, next) => {
+  app.put('/api/admin/exemptions', guard('deduction.manage'), (req, res, next) => {
     try {
       res.json(service.setExemption(req.body.date, String(req.body.employeeId || '').trim(), req.body.reason));
     } catch (err) {
@@ -367,7 +449,7 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
     }
   });
 
-  app.delete('/api/admin/exemptions', requireAdmin, (req, res, next) => {
+  app.delete('/api/admin/exemptions', guard('deduction.manage'), (req, res, next) => {
     try {
       res.json(service.removeExemption(String(req.query.date || ''), String(req.query.employeeId || '')));
     } catch (err) {
@@ -387,7 +469,7 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
     return res.status(500).json({ error: '伺服器錯誤' });
   });
 
-  return { app, service, sessions, authMode: authConfig.mode };
+  return { app, service, adminService, sessions, authMode: authConfig.mode };
 }
 
 module.exports = { createApp };

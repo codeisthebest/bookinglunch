@@ -4,6 +4,7 @@
 const path = require('node:path');
 const { createStore } = require('../src/store');
 const { createService } = require('../src/service');
+const { createAdminService } = require('../src/admins');
 const { taipeiNow } = require('../src/time');
 
 const store = createStore(process.env.DATA_FILE || path.join(__dirname, '..', 'data', 'db.json'));
@@ -18,6 +19,12 @@ for (let i = 1; i <= 30; i += 1) {
   csvRows.push(`${id},${names[i % names.length]}${i},${depts[i % depts.length]}`);
 }
 service.importEmployees(csvRows.join('\n'));
+
+// 展示用的各角色後台帳號（密碼固定，僅限展示環境）。系統管理員 admin 的密碼取自 ADMIN_PASSWORD（未設定則為 admin）。
+const admins = createAdminService(store);
+admins.ensureBootstrap(process.env.ADMIN_PASSWORD || 'admin');
+admins.create({ username: 'assistant', displayName: '助理小姐', role: 'operator', password: 'demo-assistant-1' });
+admins.create({ username: 'auditor', displayName: '稽核（唯讀）', role: 'viewer', password: 'demo-auditor-1' });
 
 // 當月每個平日（週一至週五）都上架同一份展示菜單
 const { date } = taipeiNow();

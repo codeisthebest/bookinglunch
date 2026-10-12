@@ -5,6 +5,10 @@
 
   let token = null;
   let menuItems = [];
+  let me = null; // { username, displayName, role, roleLabel, permissions }
+  let roleInfo = null;
+
+  const can = (permission) => Boolean(me && me.permissions.includes(permission));
 
   try {
     token = sessionStorage.getItem(KEY);
@@ -42,20 +46,44 @@
     return parts;
   }
 
-  function show() {
+  function applyPermissions() {
+    document.querySelectorAll('[data-perm]').forEach((el) => {
+      el.hidden = !can(el.dataset.perm);
+    });
+    $('adminWho').textContent = `${me.displayName}（${me.roleLabel}）`;
+    $('menuReadonly').hidden = can('menu.edit');
+    // 預設選到第一個看得到的分頁
+    const first = document.querySelector('.tabs button:not([hidden])');
+    if (first) first.click();
+  }
+
+  async function show() {
     $('login').classList.toggle('hidden', Boolean(token));
     $('app').classList.toggle('hidden', !token);
-    $('logoutBtn').classList.toggle('hidden', !token);
-    if (token) {
-      ['reportDate', 'menuDate', 'exDate'].forEach((id) => {
-        if (!$(id).value) $(id).value = today();
-      });
+    $('adminBar').hidden = !token;
+    if (!token) {
+      me = null;
+      return;
+    }
+    try {
+      me = await api('GET', '/api/admin/me');
+    } catch (err) {
+      return; // 401 已在 api() 內登出
+    }
+    applyPermissions();
+    ['reportDate', 'menuDate', 'exDate'].forEach((id) => {
+      if (!$(id).value) $(id).value = today();
+    });
+    if (can('report.view')) {
       loadReport();
       loadMenu();
+    }
+    if (can('employees.manage')) {
       loadEmployees();
       loadBindings();
-      loadConfig();
     }
+    if (can('config.edit')) loadConfig();
+    if (can('admins.manage')) loadAdmins();
   }
 
   // ---------- 報表 ----------
@@ -83,7 +111,7 @@
           html += `<tr><td>${esc(o.employeeId)}</td><td>${esc(o.employeeName)}</td>
             <td>${esc(o.mealLabel)}　${esc(o.itemName)}</td><td class="num">${money(o.amount)}</td>
             <td>${deductionLabel(o.deductionStatus)}</td>
-            <td><select data-deduction="${esc(o.id)}" aria-label="變更扣款狀態">
+            <td><select data-deduction="${esc(o.id)}" aria-label="變更扣款狀態" ${can('deduction.manage') ? '' : 'disabled'}>
               ${['pending', 'sent_to_hr', 'waived'].map((s) => `<option value="${s}" ${s === o.deductionStatus ? 'selected' : ''}>${deductionText(s)}</option>`).join('')}
             </select></td></tr>`;
         });
@@ -138,13 +166,14 @@
       $('menuRows').innerHTML = '<p class="muted">這天還沒有菜單，請新增品項。</p>';
       return;
     }
+    const ro = can('menu.edit') ? '' : 'disabled';
     $('menuRows').innerHTML = menuItems.map((item, i) => `<div class="row" style="margin-bottom:8px;flex-wrap:nowrap">
-      <select data-i="${i}" data-f="meal" style="width:90px">
+      <select data-i="${i}" data-f="meal" style="width:90px" ${ro}>
         <option value="lunch" ${item.meal === 'lunch' ? 'selected' : ''}>午餐</option>
         <option value="dinner" ${item.meal === 'dinner' ? 'selected' : ''}>晚餐</option></select>
-      <input data-i="${i}" data-f="name" value="${esc(item.name)}" placeholder="品名">
-      <input data-i="${i}" data-f="price" value="${esc(item.price)}" inputmode="numeric" style="width:90px" placeholder="金額">
-      <button data-remove="${i}" aria-label="刪除品項">✕</button></div>`).join('');
+      <input data-i="${i}" data-f="name" value="${esc(item.name)}" placeholder="品名" ${ro}>
+      <input data-i="${i}" data-f="price" value="${esc(item.price)}" inputmode="numeric" style="width:90px" placeholder="金額" ${ro}>
+      ${ro ? '' : `<button data-remove="${i}" aria-label="刪除品項">✕</button>`}</div>`).join('');
   }
 
   async function saveMenu() {
@@ -227,19 +256,73 @@
     }
   }
 
+  // ---------- 管理員帳號 ----------
+
+  async function loadAdmins() {
+    try {
+      const [roles, admins, audit] = await Promise.all([
+        api('GET', '/api/admin/roles'),
+        api('GET', '/api/admin/admins'),
+        api('GET', '/api/admin/audit'),
+      ]);
+      roleInfo = roles;
+      $('newRole').innerHTML = roles.roles.map((r) => `<option value="${esc(r.key)}">${esc(r.label)}</option>`).join('');
+      $('roleHelp').innerHTML = roles.roles.map((r) => `<div><b>${esc(r.label)}</b>：${esc(r.description)}</div>`).join('');
+
+      $('adminList').innerHTML = `<table><tr><th>帳號</th><th>名稱</th><th>角色</th><th>狀態</th><th></th></tr>${
+        admins.map((a) => {
+          const self = a.username === me.username;
+          return `<tr><td>${esc(a.username)}${self ? '（你）' : ''}</td><td>${esc(a.displayName)}</td>
+            <td><select data-admin-role="${esc(a.username)}" aria-label="角色" ${self ? 'disabled' : ''}>${
+              roles.roles.map((r) => `<option value="${esc(r.key)}" ${r.key === a.role ? 'selected' : ''}>${esc(r.label)}</option>`).join('')
+            }</select></td>
+            <td>${a.active ? '<span class="pill ok">啟用</span>' : '<span class="pill danger">已停用</span>'}</td>
+            <td style="white-space:nowrap"><button data-admin-pw="${esc(a.username)}">重設密碼</button>
+              ${self ? '' : `<button class="${a.active ? 'danger' : ''}" data-admin-toggle="${esc(a.username)}" data-active="${a.active}">${a.active ? '停用' : '啟用'}</button>`}</td></tr>`;
+        }).join('')
+      }</table>`;
+
+      $('auditList').innerHTML = audit.length === 0
+        ? '<p class="muted">尚無紀錄</p>'
+        : `<table><tr><th>時間</th><th>操作者</th><th>動作</th></tr>${
+          audit.map((a) => `<tr><td>${esc(new Date(a.at).toLocaleString('zh-TW'))}</td><td>${esc(a.actor)}</td><td>${esc(a.method)} ${esc(a.path)}</td></tr>`).join('')
+        }</table>`;
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  async function updateAdmin(username, patch, okMessage) {
+    try {
+      await api('PUT', `/api/admin/admins/${encodeURIComponent(username)}`, patch);
+      toast(okMessage);
+    } catch (err) {
+      fail(err);
+    }
+    loadAdmins();
+  }
+
   // ---------- 事件 ----------
 
   document.addEventListener('click', (e) => {
     const t = e.target.closest('button');
     if (!t) return;
     if (t.dataset.tab) {
-      ['report', 'menu', 'employees', 'settings'].forEach((n) => $(`tab-${n}`).classList.toggle('hidden', n !== t.dataset.tab));
+      ['report', 'menu', 'employees', 'settings', 'admins'].forEach((n) => $(`tab-${n}`).classList.toggle('hidden', n !== t.dataset.tab));
       document.querySelectorAll('.tabs button').forEach((b) => b.setAttribute('aria-selected', String(b === t)));
     } else if (t.dataset.unbind) {
       if (confirm('確定解除這個 LINE 帳號的綁定？對方需要重新綁定才能使用。')) {
         api('DELETE', `/api/admin/bindings/${encodeURIComponent(t.dataset.unbind)}`)
           .then(() => { toast('已解除綁定'); loadBindings(); loadEmployees(); })
           .catch(fail);
+      }
+    } else if (t.dataset.adminPw) {
+      const password = prompt(`請輸入「${t.dataset.adminPw}」的新密碼（至少 8 個字元）。對方目前的登入會立即失效。`);
+      if (password) updateAdmin(t.dataset.adminPw, { password }, '密碼已重設');
+    } else if (t.dataset.adminToggle) {
+      const activate = t.dataset.active !== 'true';
+      if (activate || confirm(`確定停用「${t.dataset.adminToggle}」？對方會立即被登出。`)) {
+        updateAdmin(t.dataset.adminToggle, { active: activate }, activate ? '已啟用' : '已停用');
       }
     } else if (t.dataset.remove !== undefined) {
       menuItems.splice(Number(t.dataset.remove), 1);
@@ -254,6 +337,10 @@
 
   document.addEventListener('change', async (e) => {
     const t = e.target;
+    if (t.dataset.adminRole) {
+      updateAdmin(t.dataset.adminRole, { role: t.value }, '角色已更新');
+      return;
+    }
     if (t.dataset.deduction) {
       try {
         await api('PUT', `/api/admin/deductions/${t.dataset.deduction}`, { status: t.value });
@@ -269,7 +356,7 @@
     const msg = $('loginMsg');
     msg.classList.add('hidden');
     try {
-      const r = await request('POST', '/api/auth/admin', { body: { password: $('password').value } });
+      const r = await request('POST', '/api/auth/admin', { body: { username: $('username').value.trim(), password: $('password').value } });
       token = r.token;
       try {
         sessionStorage.setItem(KEY, token);
@@ -286,6 +373,33 @@
     if (e.key === 'Enter') $('loginBtn').click();
   });
   $('logoutBtn').addEventListener('click', logout);
+  $('pwBtn').addEventListener('click', async () => {
+    const oldPassword = prompt('請輸入目前的密碼：');
+    if (!oldPassword) return;
+    const newPassword = prompt('請輸入新密碼（至少 8 個字元）：');
+    if (!newPassword) return;
+    try {
+      await api('POST', '/api/admin/me/password', { oldPassword, newPassword });
+      toast('密碼已更新');
+    } catch (err) {
+      fail(err);
+    }
+  });
+  $('adminAdd').addEventListener('click', async () => {
+    try {
+      await api('POST', '/api/admin/admins', {
+        username: $('newUsername').value.trim(),
+        displayName: $('newDisplayName').value.trim(),
+        role: $('newRole').value,
+        password: $('newPassword').value,
+      });
+      toast('已建立帳號');
+      ['newUsername', 'newDisplayName', 'newPassword'].forEach((id) => { $(id).value = ''; });
+      loadAdmins();
+    } catch (err) {
+      fail(err);
+    }
+  });
   $('reportBtn').addEventListener('click', loadReport);
   $('exportBtn').addEventListener('click', exportCsv);
   $('menuLoad').addEventListener('click', loadMenu);
