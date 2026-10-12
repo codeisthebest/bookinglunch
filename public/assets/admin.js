@@ -71,7 +71,7 @@
       return; // 401 已在 api() 內登出
     }
     applyPermissions();
-    ['reportDate', 'menuDate', 'exDate'].forEach((id) => {
+    ['reportDate', 'menuDate', 'exDate', 'rangeTo'].forEach((id) => {
       if (!$(id).value) $(id).value = today();
     });
     if (can('report.view')) {
@@ -156,18 +156,76 @@
     return `<span class="pill ${tone}">${esc(deductionText(s))}</span>`;
   }
 
+  // 下載檔案：帶登入憑證取得內容，再交給瀏覽器存檔。檔名優先採用伺服器給的 UTF-8 檔名。
+  async function download(url, fallbackName) {
+    try {
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) {
+        let message = '匯出失敗';
+        try {
+          message = (await res.json()).error || message;
+        } catch (_) {
+          /* 非 JSON 回應 */
+        }
+        throw new Error(message);
+      }
+      const match = /filename\*=UTF-8''([^;]+)/i.exec(res.headers.get('content-disposition') || '');
+      saveBlob(await res.blob(), match ? decodeURIComponent(match[1]) : fallbackName);
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  // 觸發瀏覽器存檔。連結要先掛到頁面上，網址延後釋放：太早釋放時，部分瀏覽器（Safari、Firefox）會下載失敗
+  function saveBlob(blob, fileName) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }
+
+  // 上傳檔案（原始位元組）。失敗時錯誤物件帶有 details（逐列問題）。
+  async function upload(url, file) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' },
+      body: file,
+    });
+    let data = null;
+    try {
+      data = await res.json();
+    } catch (_) {
+      data = null;
+    }
+    if (!res.ok) {
+      const err = new Error((data && data.error) || `上傳失敗（${res.status}）`);
+      err.status = res.status;
+      err.details = data && data.details;
+      if (res.status === 401) logout();
+      throw err;
+    }
+    return data;
+  }
+
+  const isXlsx = (file) => /\.xlsx$/i.test(file.name);
+
+  function problemList(details) {
+    if (!details || details.length === 0) return '';
+    const shown = details.slice(0, 15).map((d) => `第 ${d.line} 列：${d.message}`);
+    return `\n${shown.join('\n')}${details.length > 15 ? `\n…還有 ${details.length - 15} 列` : ''}`;
+  }
+
   async function exportCsv() {
     try {
       const res = await fetch(`/api/admin/deductions.csv?date=${$('reportDate').value}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error('匯出失敗');
-      const blob = await res.blob();
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `deductions-${$('reportDate').value}.csv`;
-      a.click();
-      URL.revokeObjectURL(a.href);
+      saveBlob(await res.blob(), `deductions-${$('reportDate').value}.csv`);
     } catch (err) {
       fail(err);
     }
@@ -254,18 +312,50 @@
     }
   }
 
+  let pendingEmployeeFile = null; // 已選的 .xlsx 檔（CSV 會直接讀進文字框）
+
   async function importCsv() {
     const msg = $('importMsg');
     try {
-      const r = await api('POST', '/api/admin/employees/import', { csv: $('csvText').value });
+      const r = pendingEmployeeFile
+        ? await upload('/api/admin/employees/import-xlsx', pendingEmployeeFile)
+        : await api('POST', '/api/admin/employees/import', { csv: $('csvText').value });
       msg.className = 'notice ok';
       msg.textContent = `匯入完成：新增 ${r.created}、更新 ${r.updated}、略過 ${r.errors.length}，目前共 ${r.total} 人`
         + (r.padded ? `；有 ${r.padded} 筆員編不足位數，已自動補零（請確認 Excel 員編欄位是否為文字格式）` : '')
-        + (r.errors.length ? `（第 ${r.errors.map((e) => e.line).join('、')} 行有誤）` : '');
+        + problemList(r.errors);
+      msg.style.whiteSpace = 'pre-line';
       loadEmployees();
     } catch (err) {
       msg.className = 'notice danger';
-      msg.textContent = err.message;
+      msg.textContent = err.message + problemList(err.details);
+      msg.style.whiteSpace = 'pre-line';
+    }
+  }
+
+  // ---------- 菜單 Excel／CSV 匯入 ----------
+
+  async function importMenuFile() {
+    const msg = $('menuImportMsg');
+    const file = $('menuFile').files[0];
+    msg.classList.remove('hidden');
+    msg.style.whiteSpace = 'pre-line';
+    if (!file) {
+      msg.className = 'notice warn';
+      msg.textContent = '請先選擇檔案';
+      return;
+    }
+    try {
+      const r = isXlsx(file)
+        ? await upload('/api/admin/menu/import-xlsx', file)
+        : await api('POST', '/api/admin/menu/import', { csv: await file.text() });
+      msg.className = 'notice ok';
+      msg.textContent = `匯入完成：${r.dates} 天、共 ${r.items} 個品項（${r.perDate.map((d) => `${d.date.slice(5)}：${d.count}`).join('、')}）`;
+      $('menuFile').value = '';
+      loadMenu();
+    } catch (err) {
+      msg.className = 'notice danger';
+      msg.textContent = err.message + problemList(err.details);
     }
   }
 
@@ -509,9 +599,40 @@
   });
   $('menuSave').addEventListener('click', saveMenu);
   $('importBtn').addEventListener('click', importCsv);
+  $('exportOrdersXlsx').addEventListener('click', () => {
+    const from = $('rangeFrom').value || `${$('reportDate').value.slice(0, 7)}-01`;
+    const to = $('rangeTo').value || $('reportDate').value;
+    download(`/api/admin/export/orders.xlsx?from=${from}&to=${to}`, `orders_${from}_${to}.xlsx`);
+  });
+  $('exportDeductionsXlsx').addEventListener('click', () => {
+    download(`/api/admin/export/deductions.xlsx?date=${$('reportDate').value}`, `deductions_${$('reportDate').value}.xlsx`);
+  });
+  $('menuExportXlsx').addEventListener('click', () => {
+    const month = $('menuDate').value.slice(0, 7);
+    download(`/api/admin/export/menu.xlsx?month=${month}`, `menu_${month}.xlsx`);
+  });
+  $('menuTemplateXlsx').addEventListener('click', () => {
+    const month = $('menuDate').value.slice(0, 7);
+    download(`/api/admin/templates/menu.xlsx?month=${month}`, `menu_template_${month}.xlsx`);
+  });
+  $('menuImport').addEventListener('click', importMenuFile);
+  $('employeesTemplateXlsx').addEventListener('click', () => download('/api/admin/templates/employees.xlsx', 'employees_template.xlsx'));
+  $('employeesExportXlsx').addEventListener('click', () => download('/api/admin/export/employees.xlsx', 'employees.xlsx'));
   $('csvFile').addEventListener('change', async (e) => {
     const file = e.target.files[0];
-    if (file) $('csvText').value = await file.text();
+    if (!file) return;
+    if (isXlsx(file)) {
+      // Excel 檔不經文字框，按「匯入」時直接上傳
+      pendingEmployeeFile = file;
+      $('csvText').value = '';
+      $('csvText').placeholder = `已選擇 Excel 檔：${file.name}（按「匯入」上傳）`;
+    } else {
+      pendingEmployeeFile = null;
+      $('csvText').value = await file.text();
+    }
+  });
+  $('csvText').addEventListener('input', () => {
+    if ($('csvText').value) pendingEmployeeFile = null; // 手動貼上內容時，以貼上的內容為準
   });
   $('configSave').addEventListener('click', async () => {
     try {

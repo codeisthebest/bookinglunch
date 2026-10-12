@@ -42,7 +42,10 @@ function parseCsv(text) {
 
 function toCsv(rows) {
   const escape = (value) => {
-    const s = value === null || value === undefined ? '' : String(value);
+    let s = value === null || value === undefined ? '' : String(value);
+    // 公式注入防護：字串以 = + - @ 或定位字元開頭時，Excel 會把它當公式執行，前面補一個單引號讓它只是文字
+    // （數字型別不處理，所以負數金額不受影響）
+    if (typeof value === 'string' && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
     return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   return rows.map((r) => r.map(escape).join(',')).join('\r\n');

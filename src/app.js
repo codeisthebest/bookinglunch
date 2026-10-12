@@ -6,6 +6,8 @@ const express = require('express');
 const { createService, AppError } = require('./service');
 const { getClock, setClock, taipeiNow } = require('./time');
 const { toCsv } = require('./csv');
+const excel = require('./excel');
+const { XLSX_MIME, MAX_FILE_BYTES } = require('./xlsx');
 const { createAdminService } = require('./admins');
 const { createKioskService } = require('./kiosks');
 const { createTokenService } = require('./pickup-token');
@@ -60,6 +62,24 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
 
   const app = express();
   app.use(express.json({ limit: '1mb' }));
+
+  // 上傳 Excel／CSV 檔用：把整個請求內容當作原始位元組收下（不論 Content-Type），大小另有上限
+  const rawUpload = express.raw({ type: () => true, limit: MAX_FILE_BYTES });
+
+  function uploadedFile(req) {
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) throw new AppError(400, '沒有收到檔案內容');
+    return req.body;
+  }
+
+  // 下載 .xlsx：檔名同時提供 ASCII 備用名與 UTF-8 中文名
+  function sendXlsx(res, fileName, asciiName, buffer) {
+    res.set({
+      'Content-Type': XLSX_MIME,
+      'Content-Disposition': `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+      'Cache-Control': 'no-store',
+    });
+    res.send(buffer);
+  }
 
   // 健康檢查（容器、負載平衡器用）：不需登入，也不回傳任何資料
   app.get('/healthz', (req, res) => res.json({ ok: true }));
@@ -499,6 +519,82 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
     }
   });
 
+  // ---------- Excel 匯出與匯入 ----------
+
+  app.get('/api/admin/export/orders.xlsx', guard('report.export'), (req, res, next) => {
+    try {
+      const month = excel.defaultMonth();
+      const from = String(req.query.from || `${month}-01`);
+      const to = String(req.query.to || taipeiNow().date);
+      sendXlsx(res, `訂單明細_${from}_${to}.xlsx`, `orders_${from}_${to}.xlsx`, excel.ordersWorkbook(service, from, to));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get('/api/admin/export/deductions.xlsx', guard('report.export'), (req, res, next) => {
+    try {
+      const date = String(req.query.date || taipeiNow().date);
+      sendXlsx(res, `未取餐扣款清單_${date}.xlsx`, `deductions_${date}.xlsx`, excel.deductionsWorkbook(service, date));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get('/api/admin/export/employees.xlsx', guard('employees.manage'), (req, res, next) => {
+    try {
+      sendXlsx(res, '員工名單.xlsx', 'employees.xlsx', excel.employeesWorkbook(service));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get('/api/admin/export/menu.xlsx', guard('report.view'), (req, res, next) => {
+    try {
+      const month = String(req.query.month || excel.defaultMonth());
+      sendXlsx(res, `菜單_${month}.xlsx`, `menu_${month}.xlsx`, excel.menuWorkbook(service, month));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get('/api/admin/templates/employees.xlsx', guard('employees.manage'), (req, res) => {
+    sendXlsx(res, '員工名單範本.xlsx', 'employees_template.xlsx', excel.employeesTemplate());
+  });
+
+  app.get('/api/admin/templates/menu.xlsx', guard('menu.edit'), (req, res, next) => {
+    try {
+      const month = String(req.query.month || excel.defaultMonth());
+      sendXlsx(res, `菜單範本_${month}.xlsx`, `menu_template_${month}.xlsx`, excel.menuTemplate(service, month));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post('/api/admin/employees/import-xlsx', guard('employees.manage'), rawUpload, (req, res, next) => {
+    try {
+      res.json(service.importEmployeeRows(excel.employeeRowsFromXlsx(uploadedFile(req))));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post('/api/admin/menu/import-xlsx', guard('menu.edit'), rawUpload, (req, res, next) => {
+    try {
+      res.json(service.importMenuRows(excel.menuRowsFromXlsx(uploadedFile(req))));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post('/api/admin/menu/import', guard('menu.edit'), (req, res, next) => {
+    try {
+      res.json(service.importMenuCsv(req.body.csv));
+    } catch (err) {
+      next(err);
+    }
+  });
+
   app.put('/api/admin/deductions/:orderId', guard('deduction.manage'), (req, res, next) => {
     try {
       res.json(service.setDeductionStatus(req.params.orderId, req.body.status));
@@ -533,6 +629,7 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
       return res.status(err.status).json(err.details === undefined ? { error: err.message } : { error: err.message, details: err.details });
     }
     if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'JSON 格式錯誤' });
+    if (err.type === 'entity.too.large') return res.status(413).json({ error: '檔案過大（上限 10 MB）' });
     console.error(err);
     return res.status(500).json({ error: '伺服器錯誤' });
   });

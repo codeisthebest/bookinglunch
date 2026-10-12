@@ -42,6 +42,16 @@
           <div style="display:flex;gap:8px"><button id="reportBtn" class="primary">查詢</button>
             <button id="exportBtn" data-perm="report.export">匯出扣款清單 CSV</button></div>
         </div>
+        <div class="card" data-perm="report.export">
+          <h2>匯出 Excel</h2>
+          <div class="row" style="align-items:flex-end">
+            <div style="flex:1"><label for="rangeFrom">訂單明細起日</label><input id="rangeFrom" type="date"></div>
+            <div style="flex:1"><label for="rangeTo">迄日</label><input id="rangeTo" type="date"></div>
+            <button id="exportOrdersXlsx">訂單明細＋每日統計（Excel）</button>
+            <button id="exportDeductionsXlsx">上方日期的扣款清單（Excel）</button>
+          </div>
+          <p class="muted" style="margin:8px 0 0">員編以文字格式輸出（保留前導零），已取消的訂單不列入。</p>
+        </div>
         <div id="reportBody"></div>
         <div class="card" data-perm="deduction.manage">
           <h2>例外名單（出差、請假免扣）</h2>
@@ -60,6 +70,19 @@
             <div><label for="menuDate">菜單日期</label><input id="menuDate" type="date"></div>
             <button id="menuLoad">載入</button>
           </div>
+          <div class="row" style="margin-top:12px;gap:8px">
+            <button id="menuExportXlsx">匯出此月菜單（Excel）</button>
+            <button id="menuTemplateXlsx" data-perm="menu.edit">下載菜單範本</button>
+          </div>
+          <div data-perm="menu.edit" style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
+            <label for="menuFile">用 Excel 或 CSV 一次匯入整月菜單</label>
+            <div class="row" style="gap:8px;flex-wrap:nowrap">
+              <input type="file" id="menuFile" accept=".xlsx,.csv,text/csv">
+              <button id="menuImport" class="primary" style="white-space:nowrap">匯入菜單</button>
+            </div>
+            <p class="muted" style="margin:6px 0 0">檔案裡出現的每一天，菜單會被整天取代；有任何錯誤時整份都不會匯入。</p>
+            <div id="menuImportMsg" class="notice info hidden" style="margin-top:10px"></div>
+          </div>
           <p id="menuReadonly" class="muted" hidden style="margin-top:8px">此帳號只有檢視權限，無法修改菜單。</p>
           <div id="menuRows" style="margin-top:12px"></div>
           <div style="display:flex;gap:8px;margin-top:12px" data-perm="menu.edit">
@@ -71,10 +94,14 @@
 
       <section id="tab-employees" class="hidden">
         <div class="card">
-          <h2>匯入員工名單（CSV）</h2>
-          <p class="muted">標題列需包含「員工編號」「姓名」，可選「部門」「驗證碼」。「驗證碼」是員工首次綁定 LINE 時要多輸入的資料（例如生日月日或分機），可防止他人只憑員編與姓名冒綁；留空則只比對員編與姓名。Excel 或鼎新匯出後另存為 CSV（UTF-8）即可。相同員編會更新。</p>
-          <input type="file" id="csvFile" accept=".csv,text/csv">
-          <div class="field" style="margin-top:10px"><label for="csvText">或直接貼上內容</label>
+          <h2>匯入員工名單（Excel 或 CSV）</h2>
+          <p class="muted">標題列需包含「員工編號」「姓名」，可選「部門」「驗證碼」。「驗證碼」是員工首次綁定 LINE 時要多輸入的資料（例如生日月日或分機），可防止他人只憑員編與姓名冒綁；留空則只比對員編與姓名。可直接上傳 Excel（.xlsx）檔，或貼上 CSV。員編欄位被 Excel 轉成數字時（012003 變 12003）會自動補零。相同員編會更新。</p>
+          <div class="row" style="gap:8px;margin-bottom:10px">
+            <button id="employeesTemplateXlsx">下載匯入範本（Excel）</button>
+            <button id="employeesExportXlsx">匯出目前名單（Excel）</button>
+          </div>
+          <input type="file" id="csvFile" accept=".xlsx,.csv,text/csv">
+          <div class="field" style="margin-top:10px"><label for="csvText">或直接貼上 CSV 內容</label>
             <textarea id="csvText" placeholder="員工編號,姓名,部門&#10;E001,王小明,行政"></textarea></div>
           <button id="importBtn" class="primary">匯入</button>
           <div id="importMsg" class="notice info hidden" style="margin-top:12px"></div>

@@ -48,6 +48,15 @@ function taipeiNow() {
   };
 }
 
+// ISO 時間字串 → 台北時間 'YYYY-MM-DD HH:mm'（報表顯示用）；空值回傳空字串
+function toTaipeiText(iso) {
+  if (!iso) return '';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  const p = Object.fromEntries(formatter.formatToParts(date).map((x) => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+}
+
 function isValidDate(value) {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
@@ -61,6 +70,7 @@ module.exports = {
   setClock,
   getClock,
   taipeiNow,
+  toTaipeiText,
   isValidDate,
   isValidTime,
 };

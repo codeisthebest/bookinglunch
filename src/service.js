@@ -7,6 +7,8 @@ const { parseCsv } = require('./csv');
 const { createTokenService } = require('./pickup-token');
 
 const MEAL_LABEL = { lunch: '午餐', dinner: '晚餐' };
+const STATUS_LABEL = { booked: '待取餐', picked: '已取餐', unclaimed: '未取餐', cancelled: '已取消', exempt: '例外免扣' };
+const DEDUCTION_LABEL = { pending: '待處理', sent_to_hr: '已送人事', waived: '已豁免' };
 const DELEGATE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // 去掉容易混淆的 0/O/1/I/L
 
 const MSG = {
@@ -116,7 +118,7 @@ function createService(store, { tokens } = {}) {
   // ---------- 員工名單 ----------
 
   const HEADER_MAP = {
-    id: ['員工編號', '員編', 'employee_id', 'employeeid', 'id'],
+    id: ['員工編號', '員工代號', '員工代碼', '員編', '工號', 'employee_id', 'employeeid', 'id'],
     name: ['姓名', 'name'],
     dept: ['部門', 'dept', 'department'],
     deptCode: ['部門代號', '部門代碼', 'dept_code', 'deptcode'],
@@ -318,6 +320,110 @@ function createService(store, { tokens } = {}) {
       log('menu.set', { date, count: normalized.length });
       return getMenu(date);
     });
+  }
+
+  // ---------- 菜單匯入（CSV 與 Excel 共用） ----------
+
+  const MENU_HEADERS = {
+    date: ['日期', 'date'],
+    meal: ['餐別', 'meal'],
+    name: ['品名', '品項', 'name'],
+    price: ['定價', '價格', '售價', 'price'],
+    main: ['主菜', 'main'],
+    sides: ['配菜', 'sides'],
+    veg: ['蔬菜／湯品', '蔬菜/湯品', '蔬菜', '湯品', 'veg'],
+    special: ['特殊商品', '特殊', '★', 'special'],
+  };
+
+  // 先找完全相符的標題；找不到再找「包含」關鍵字的（例如「特殊商品（★）」）
+  function findMenuColumn(headers, key) {
+    const lower = headers.map((h) => h.toLowerCase());
+    const aliases = MENU_HEADERS[key].map((a) => a.toLowerCase());
+    const exact = aliases.map((a) => lower.indexOf(a)).find((i) => i >= 0);
+    if (exact !== undefined) return exact;
+    const loose = lower.findIndex((h) => aliases.some((a) => a.length >= 2 && h.includes(a)) || (key === 'special' && h.includes('★')));
+    return loose >= 0 ? loose : undefined;
+  }
+
+  function parseMenuDate(value) {
+    const m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/.exec(String(value).trim());
+    if (!m) return null;
+    const date = `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+    return Number.isNaN(Date.parse(`${date}T00:00:00Z`)) || new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10) !== date ? null : date;
+  }
+
+  function parseMeal(value) {
+    const v = String(value).trim().toLowerCase();
+    if (['午餐', '午', 'lunch'].includes(v)) return 'lunch';
+    if (['晚餐', '晚', 'dinner'].includes(v)) return 'dinner';
+    return null;
+  }
+
+  function parseFlag(value) {
+    if (value === true) return true;
+    const v = String(value === null || value === undefined ? '' : value).trim().toLowerCase();
+    return ['★', '☆', '是', 'y', 'yes', 'true', '1', 'v', '✓', '特殊'].includes(v);
+  }
+
+  // rows：第一列為標題的二維陣列。整份檔案先全部驗證，有任何錯誤就一筆都不匯入。
+  // 檔案裡出現的每一天，菜單會被「整天取代」；沒出現的日期不受影響。
+  function importMenuRows(rows) {
+    if (!Array.isArray(rows) || rows.length < 2) throw new AppError(400, '至少需要標題列與一筆資料');
+    const headers = rows[0].map((h) => String(h === null || h === undefined ? '' : h).trim());
+    const cols = Object.fromEntries(Object.keys(MENU_HEADERS).map((k) => [k, findMenuColumn(headers, k)]));
+    const missing = ['date', 'meal', 'name', 'price'].filter((k) => cols[k] === undefined);
+    if (missing.length > 0) {
+      const labels = { date: '日期', meal: '餐別', name: '品名', price: '定價' };
+      throw new AppError(400, `標題列缺少必要欄位：${missing.map((k) => `「${labels[k]}」`).join('、')}`);
+    }
+
+    const errors = [];
+    const byDate = new Map();
+    rows.slice(1).forEach((row, index) => {
+      const line = index + 2;
+      const cell = (i) => (i === undefined || row[i] === null || row[i] === undefined ? '' : String(row[i]).trim());
+      if (row.every((v) => v === null || v === undefined || String(v).trim() === '')) return;
+
+      const date = parseMenuDate(cell(cols.date));
+      const meal = parseMeal(cell(cols.meal));
+      const name = cell(cols.name);
+      const price = Number(String(cell(cols.price)).replace(/[$,元\s]/g, ''));
+      const problems = [];
+      if (!date) problems.push('日期格式需為 YYYY-MM-DD');
+      if (!meal) problems.push('餐別需為「午餐」或「晚餐」');
+      if (!name) problems.push('品名不可為空');
+      if (!Number.isInteger(price) || price <= 0) problems.push('定價需為正整數');
+      if (problems.length > 0) {
+        errors.push({ line, message: problems.join('；') });
+        return;
+      }
+      const items = byDate.get(date) || [];
+      if (items.some((i) => i.meal === meal && i.name === name)) {
+        errors.push({ line, message: `${date} 已有相同的${MEAL_LABEL[meal]}品項「${name}」` });
+        return;
+      }
+      items.push({ meal, name, price, main: cell(cols.main), sides: cell(cols.sides), veg: cell(cols.veg), special: parseFlag(row[cols.special]) });
+      byDate.set(date, items);
+    });
+
+    if (errors.length > 0) {
+      throw new AppError(400, `菜單檔有 ${errors.length} 列需要修正，尚未匯入任何資料`, errors);
+    }
+    if (byDate.size === 0) throw new AppError(400, '檔案裡沒有可匯入的菜單資料');
+
+    return store.tx(() => {
+      const perDate = [];
+      [...byDate.keys()].sort().forEach((date) => {
+        setMenu(date, byDate.get(date));
+        perDate.push({ date, count: byDate.get(date).length });
+      });
+      log('menu.import', { dates: perDate.length });
+      return { dates: perDate.length, items: perDate.reduce((n, d) => n + d.count, 0), perDate };
+    });
+  }
+
+  function importMenuCsv(csvText) {
+    return importMenuRows(parseCsv(String(csvText || '')));
   }
 
   // ---------- 訂單視圖 ----------
@@ -755,14 +861,33 @@ function createService(store, { tokens } = {}) {
     return store.orders.byDateAll(date).map(orderView);
   }
 
+  // 日期區間（含頭尾）的所有訂單，匯出報表用；最長一年
+  function ordersInRange(from, to) {
+    if (!isValidDate(from) || !isValidDate(to)) throw new AppError(400, '日期格式需為 YYYY-MM-DD');
+    if (from > to) throw new AppError(400, '起日不可晚於迄日');
+    if (daysBetween(from, to) > 366) throw new AppError(400, '匯出區間最長一年');
+    return store.orders.inRange(from, to).map(orderView);
+  }
+
+  function menuForMonth(month) {
+    if (!/^\d{4}-\d{2}$/.test(String(month))) throw new AppError(400, '月份格式需為 YYYY-MM');
+    return store.menus.byMonth(month);
+  }
+
   return {
     MSG,
     MEAL_LABEL,
+    STATUS_LABEL,
+    DEDUCTION_LABEL,
     AppError,
     getConfig,
     updateConfig,
     importEmployees,
     importEmployeeRows,
+    importMenuRows,
+    importMenuCsv,
+    ordersInRange,
+    menuForMonth,
     listEmployees,
     getEmployee,
     findBinding,

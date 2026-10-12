@@ -12,6 +12,8 @@
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
   },
   "dependencies": {
-    "express": "4.21.2"
+    "express": "4.22.3",
+    "fast-xml-parser": "5.11.2",
+    "fflate": "0.8.3"
   }
 }
