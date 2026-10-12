@@ -31,10 +31,10 @@ function createService(store) {
   function orderingStatus(date) {
     const today = taipeiNow();
     const cutoff = store.db.config.orderCutoff;
-    if (date !== today.date) {
-      return { open: false, reason: date < today.date ? '已過日期' : '僅開放當日訂餐' };
-    }
-    if (today.time > cutoff) return { open: false, reason: `已過截止時間 ${cutoff}` };
+    if (date < today.date) return { open: false, reason: '已過日期' };
+    // 開放當月訂餐：只接受與今天同月份的日期；每天的截止時間在當天 cutoff
+    if (date.slice(0, 7) !== today.date.slice(0, 7)) return { open: false, reason: '僅開放當月訂餐' };
+    if (date === today.date && today.time > cutoff) return { open: false, reason: `已過截止時間 ${cutoff}` };
     return { open: true, reason: null };
   }
 
@@ -189,6 +189,7 @@ function createService(store) {
       employeeId: order.employeeId,
       employeeName: owner ? owner.name : '',
       status: statusOf(order),
+      changeable: order.status === 'booked' && orderingStatus(order.date).open,
       delegateId: order.delegateId,
       delegateName: delegate ? delegate.name : null,
       delegateCode: order.delegateId ? order.delegateCode : null,
@@ -226,42 +227,59 @@ function createService(store) {
 
   // ---------- 員工端 ----------
 
-  function todayMenu(employeeId) {
+  // 指定日期的菜單與我的訂單；date 省略時為今天。availableDates 為當月今天起有菜單的日期。
+  function menuForDate(employeeId, date) {
     const today = taipeiNow();
-    const ordering = orderingStatus(today.date);
-    const myOrders = activeOrders((o) => o.date === today.date && o.employeeId === employeeId).map(orderView);
+    const day = date || today.date;
+    if (!isValidDate(day)) throw new AppError(400, '日期格式需為 YYYY-MM-DD');
+
+    const month = today.date.slice(0, 7);
+    const availableDates = Object.keys(store.db.menus)
+      .filter((d) => d >= today.date && d.slice(0, 7) === month && store.db.menus[d].length > 0)
+      .sort();
+    const myOrders = activeOrders((o) => o.date === day && o.employeeId === employeeId).map(orderView);
     const delegatedToMe = activeOrders(
-      (o) => o.date === today.date && o.delegateId === employeeId && o.status === 'booked',
+      (o) => o.date === day && o.delegateId === employeeId && o.status === 'booked',
     ).map(orderView);
+    const upcoming = activeOrders(
+      (o) => o.employeeId === employeeId && o.date >= today.date && o.date.slice(0, 7) === month,
+    )
+      .sort((a, b) => a.date.localeCompare(b.date) || a.meal.localeCompare(b.meal))
+      .map(orderView);
+
     return {
-      date: today.date,
+      today: today.date,
+      date: day,
       time: today.time,
       cutoff: store.db.config.orderCutoff,
       subsidy: store.db.config.subsidy,
-      ordering,
-      items: getMenu(today.date),
+      ordering: orderingStatus(day),
+      items: getMenu(day),
+      availableDates,
       myOrders,
       delegatedToMe,
+      upcoming,
     };
   }
 
-  function placeOrder(employeeId, itemId) {
+  function placeOrder(employeeId, itemId, date) {
     requireEmployee(employeeId);
-    const today = taipeiNow();
-    const ordering = orderingStatus(today.date);
+    const day = date || taipeiNow().date;
+    if (!isValidDate(day)) throw new AppError(400, '日期格式需為 YYYY-MM-DD');
+    const ordering = orderingStatus(day);
     if (!ordering.open) throw new AppError(409, `目前無法訂餐：${ordering.reason}`);
 
-    const item = getMenu(today.date).find((i) => i.id === itemId);
-    if (!item) throw new AppError(404, '今日菜單沒有此品項');
+    const item = getMenu(day).find((i) => i.id === itemId);
+    if (!item) throw new AppError(404, '該日菜單沒有此品項');
 
     const duplicate = activeOrders(
-      (o) => o.date === today.date && o.employeeId === employeeId && o.meal === item.meal,
+      (o) => o.date === day && o.employeeId === employeeId && o.meal === item.meal,
     );
-    if (duplicate.length > 0) throw new AppError(409, `今日${MEAL_LABEL[item.meal]}已訂購，請先取消再重新訂購`);
+    if (duplicate.length > 0) throw new AppError(409, `${day} 的${MEAL_LABEL[item.meal]}已訂購，請先取消再重新訂購`);
 
     const order = {
       id: store.nextId('O'),
-      date: today.date,
+      date: day,
       employeeId,
       meal: item.meal,
       itemId: item.id,
@@ -290,6 +308,15 @@ function createService(store) {
     return order;
   }
 
+  // 委託代領不受訂餐截止時間限制（中午才指定同事去領也合理），只要該餐尚未過取餐期限即可。
+  function assertOwnedPendingOrder(employeeId, orderId) {
+    const order = findOrder(orderId);
+    if (order.employeeId !== employeeId) throw new AppError(403, MSG.NOT_OWNER);
+    if (order.status !== 'booked') throw new AppError(409, '此訂單已取消或已取餐');
+    if (isPastMealDeadline(order)) throw new AppError(409, '此餐已超過取餐時間，無法變更委託');
+    return order;
+  }
+
   function cancelOrder(employeeId, orderId) {
     const order = assertOwnedOpenOrder(employeeId, orderId);
     order.status = 'cancelled';
@@ -308,7 +335,7 @@ function createService(store) {
     const conflict = activeOrders(
       (o) => o.date === order.date && o.meal === order.meal && o.employeeId === toEmployeeId,
     );
-    if (conflict.length > 0) throw new AppError(409, '受讓人今日此餐別已有訂單');
+    if (conflict.length > 0) throw new AppError(409, '受讓人當天此餐別已有訂單');
 
     order.employeeId = toEmployeeId;
     clearDelegation(order); // 轉讓後舊的代領授權一併清除
@@ -318,7 +345,7 @@ function createService(store) {
   }
 
   function delegateOrder(employeeId, orderId, delegateId) {
-    const order = assertOwnedOpenOrder(employeeId, orderId);
+    const order = assertOwnedPendingOrder(employeeId, orderId);
     if (!delegateId) throw new AppError(400, '請先指定代領人員編');
     if (delegateId === employeeId) throw new AppError(400, '不可指定自己為代領人');
     requireEmployee(delegateId);
@@ -331,7 +358,7 @@ function createService(store) {
   }
 
   function undelegateOrder(employeeId, orderId) {
-    const order = assertOwnedOpenOrder(employeeId, orderId);
+    const order = assertOwnedPendingOrder(employeeId, orderId);
     clearDelegation(order);
     store.save();
     log('order.undelegate', { id: order.id, employeeId });
@@ -491,7 +518,7 @@ function createService(store) {
     getEmployee,
     getMenu,
     setMenu,
-    todayMenu,
+    menuForDate,
     placeOrder,
     cancelOrder,
     transferOrder,

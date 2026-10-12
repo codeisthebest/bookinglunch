@@ -6,6 +6,7 @@
   let session = null; // { token, employee }
   let state = null; // /api/menu/today 結果
   let tab = 'menu';
+  let selectedDate = null; // null = 今天
 
   function loadSession() {
     try {
@@ -51,7 +52,7 @@
   }
 
   async function refresh() {
-    state = await api('GET', '/api/menu/today');
+    state = await api('GET', `/api/menu${selectedDate ? `?date=${selectedDate}` : ''}`);
     render();
   }
 
@@ -69,7 +70,7 @@
     const el = $('status');
     if (ordering.open) {
       el.className = 'notice ok';
-      el.textContent = `${date}　訂餐截止時間 ${cutoff}（現在 ${time}），截止前可改單或取消`;
+      el.textContent = `${date}　每天訂餐截止 ${cutoff}（現在 ${time}），截止前可改單或取消；開放訂購當月任一天`;
     } else {
       el.className = 'notice warn';
       el.textContent = `${date}　目前無法訂餐：${ordering.reason}`;
@@ -79,11 +80,15 @@
   function renderMenu() {
     const groups = { lunch: '午餐', dinner: '晚餐' };
     const bookedMeals = new Set(state.myOrders.map((o) => o.meal));
-    let html = '';
+    const dates = state.availableDates.includes(state.date)
+      ? state.availableDates
+      : [state.date, ...state.availableDates].sort();
+    let html = `<div class="card"><label for="datePick">訂餐日期（當月）</label>
+      <select id="datePick">${dates.map((d) => `<option value="${esc(d)}" ${d === state.date ? 'selected' : ''}>${esc(d)}${d === state.today ? '（今天）' : ''}</option>`).join('')}</select></div>`;
     Object.entries(groups).forEach(([meal, label]) => {
       const items = state.items.filter((i) => i.meal === meal);
       html += `<div class="card"><h2>${label}</h2>`;
-      if (items.length === 0) html += '<p class="muted">今日尚未上架</p>';
+      if (items.length === 0) html += '<p class="muted">這天尚未上架菜單</p>';
       items.forEach((item) => {
         const pay = Math.max(0, item.price - state.subsidy);
         const disabled = !state.ordering.open || bookedMeals.has(meal);
@@ -100,10 +105,10 @@
   }
 
   function orderCard(order) {
-    const canChange = order.status === 'booked' && state.ordering.open;
+    const canChange = order.changeable;
     const canDelegate = order.status === 'booked';
     let html = `<div class="card"><div class="row">
-      <div><b>${esc(order.mealLabel)}　${esc(order.itemName)}</b>
+      <div><b>${esc(order.date)}　${esc(order.mealLabel)}　${esc(order.itemName)}</b>
         <div class="muted">自付 ${money(order.amount)}</div></div>
       ${statusPill(order.status)}</div>`;
 
@@ -135,12 +140,12 @@
 
   function renderOrders() {
     let html = '';
-    if (state.myOrders.length === 0) html += '<div class="card muted">今日尚未訂餐</div>';
-    state.myOrders.forEach((o) => {
+    if (state.upcoming.length === 0) html += '<div class="card muted">本月今天起尚無訂單</div>';
+    state.upcoming.forEach((o) => {
       html += orderCard(o);
     });
     if (state.delegatedToMe.length > 0) {
-      html += '<div class="card"><h2>同事委託我代領</h2>';
+      html += `<div class="card"><h2>${esc(state.date)} 同事委託我代領</h2>`;
       state.delegatedToMe.forEach((o) => {
         html += `<div class="menu-item"><div>${esc(o.mealLabel)}　${esc(o.itemName)}
           <div class="muted">訂餐人：${esc(o.employeeName)}（${esc(o.employeeId)}）</div></div>
@@ -202,6 +207,13 @@
     }
   }
 
+  document.addEventListener('change', (event) => {
+    if (event.target.id === 'datePick' && session) {
+      selectedDate = event.target.value;
+      refresh().catch((e) => toast(e.message));
+    }
+  });
+
   document.addEventListener('click', (event) => {
     const t = event.target.closest('button');
     if (!t || !session) return;
@@ -211,7 +223,7 @@
       tab = dataset.tab;
       render();
     } else if (dataset.order) {
-      act(() => api('POST', '/api/orders', { itemId: dataset.order }), '訂購成功');
+      act(() => api('POST', '/api/orders', { itemId: dataset.order, date: state.date }), '訂購成功');
     } else if (dataset.cancel) {
       if (confirm('確定取消這筆訂單？')) {
         act(() => api('DELETE', `/api/orders/${dataset.cancel}`), '已取消');

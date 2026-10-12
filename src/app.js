@@ -71,9 +71,10 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
 
   // ---------- 員工端 ----------
 
-  app.get('/api/menu/today', requireEmployee, (req, res, next) => {
+  // 指定日期的菜單（?date=YYYY-MM-DD，省略為今天）；today 為相容舊路徑
+  app.get(['/api/menu', '/api/menu/today'], requireEmployee, (req, res, next) => {
     try {
-      res.json(service.todayMenu(req.employeeId));
+      res.json(service.menuForDate(req.employeeId, req.query.date ? String(req.query.date) : undefined));
     } catch (err) {
       next(err);
     }
@@ -81,7 +82,7 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
 
   app.post('/api/orders', requireEmployee, (req, res, next) => {
     try {
-      res.status(201).json(service.placeOrder(req.employeeId, req.body.itemId));
+      res.status(201).json(service.placeOrder(req.employeeId, req.body.itemId, req.body.date));
     } catch (err) {
       next(err);
     }

@@ -19,14 +19,24 @@ for (let i = 1; i <= 30; i += 1) {
 }
 service.importEmployees(csvRows.join('\n'));
 
+// 當月每個平日（週一至週五）都上架同一份展示菜單
 const { date } = taipeiNow();
-service.setMenu(date, [
-  { meal: 'lunch', name: '照燒雞腿飯', price: 60 },
-  { meal: 'lunch', name: '紅燒排骨飯', price: 70 },
-  { meal: 'lunch', name: '鮭魚排餐', price: 80 },
-  { meal: 'dinner', name: '滷肉飯套餐', price: 60 },
-  { meal: 'dinner', name: '薑燒豬排飯', price: 70 },
-  { meal: 'dinner', name: '牛肉麵套餐', price: 80 },
-]);
+const [year, month] = date.split('-').map(Number);
+const daysInMonth = new Date(year, month, 0).getDate();
+let menuDays = 0;
+for (let d = 1; d <= daysInMonth; d += 1) {
+  const day = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  const weekday = new Date(`${day}T12:00:00+08:00`).getUTCDay();
+  if (weekday === 0 || weekday === 6) continue;
+  service.setMenu(day, [
+    { meal: 'lunch', name: '照燒雞腿飯', price: 60 },
+    { meal: 'lunch', name: '紅燒排骨飯', price: 70 },
+    { meal: 'lunch', name: '鮭魚排餐', price: 80 },
+    { meal: 'dinner', name: '滷肉飯套餐', price: 60 },
+    { meal: 'dinner', name: '薑燒豬排飯', price: 70 },
+    { meal: 'dinner', name: '牛肉麵套餐', price: 80 },
+  ]);
+  menuDays += 1;
+}
 
-console.log(`已產生 30 位員工與 ${date} 菜單（資料檔：${process.env.DATA_FILE || 'data/db.json'}）`);
+console.log(`已產生 30 位員工與 ${year}-${String(month).padStart(2, '0')} 月 ${menuDays} 個平日的菜單（資料檔：${process.env.DATA_FILE || 'data/db.json'}）`);

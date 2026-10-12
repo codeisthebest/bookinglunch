@@ -9,7 +9,7 @@ const DEFAULT_FILE = path.join(__dirname, '..', 'data', 'db.json');
 function emptyDb() {
   return {
     config: {
-      orderCutoff: '09:00', // 每日統一截止時間（待確認）
+      orderCutoff: '10:00', // 每日統一截止時間（暫定，後台可改）
       subsidy: 33, // 公司補貼金額（元）
     },
     employees: {}, // { [employeeId]: { id, name, dept } }

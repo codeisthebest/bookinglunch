@@ -56,8 +56,51 @@ test('截止時間前可訂餐，截止後不可', () => {
   assert.equal(order.status, 'booked');
   assert.equal(order.amount, 27); // 60 - 33 補貼
 
-  at('09:30');
-  expectError(() => service.placeOrder('E002', itemId(service, 'lunch', '雞腿飯')), 409);
+  at('10:00');
+  service.placeOrder('E002', itemId(service, 'lunch', '雞腿飯')); // 截止時間整點仍可訂
+
+  at('10:30');
+  expectError(() => service.placeOrder('E003', itemId(service, 'lunch', '雞腿飯')), 409);
+});
+
+test('開放當月訂餐：當月未來日期可訂，過去與下個月不可', () => {
+  const { service } = setup();
+  at('08:00');
+  const later = '2026-10-20';
+  const nextMonth = '2026-11-02';
+  service.setMenu(later, [{ meal: 'lunch', name: '未來便當', price: 80 }]);
+  service.setMenu(nextMonth, [{ meal: 'lunch', name: '下月便當', price: 80 }]);
+  service.setMenu('2026-10-05', [{ meal: 'lunch', name: '過去便當', price: 80 }]);
+  const pick = (d) => service.getMenu(d)[0].id;
+
+  const order = service.placeOrder('E001', pick(later), later);
+  assert.equal(order.date, later);
+  assert.equal(order.changeable, true);
+  expectError(() => service.placeOrder('E001', pick(nextMonth), nextMonth), 409);
+  expectError(() => service.placeOrder('E001', pick('2026-10-05'), '2026-10-05'), 409);
+
+  // 未來日期當天的截止時間才生效：今天過了 10:00，未來的單仍可取消
+  at('15:00');
+  assert.equal(service.cancelOrder('E001', order.id).status, 'cancelled');
+
+  const view = service.menuForDate('E001', later);
+  assert.ok(view.availableDates.includes(later));
+  assert.ok(!view.availableDates.includes(nextMonth));
+  assert.ok(!view.availableDates.includes('2026-10-05'));
+});
+
+test('委託代領不受訂餐截止時間限制，但取餐期限過後不可再設', () => {
+  const { service } = setup();
+  at('08:00');
+  const order = service.placeOrder('E001', itemId(service, 'lunch', '雞腿飯'));
+
+  at('12:00'); // 已過 10:00 截止，仍可委託
+  const delegated = service.delegateOrder('E001', order.id, 'E002');
+  assert.ok(delegated.delegateCode);
+  expectError(() => service.cancelOrder('E001', order.id), 409); // 取消仍受截止限制
+
+  at('13:30');
+  expectError(() => service.undelegateOrder('E001', order.id), 409);
 });
 
 test('同一餐別不可重複訂購', () => {
