@@ -1,9 +1,25 @@
+const fs = require('node:fs');
+const path = require('node:path');
 const { createStore } = require('./store');
+const { importLegacyJson } = require('./migrate');
 const { createApp } = require('./app');
 
 const PORT = Number(process.env.PORT || 3000);
 
 const store = createStore();
+
+// 舊版把資料存成 JSON 檔：資料庫是空的、而舊檔還在時，自動搬進 SQLite（舊檔改名保留，不會刪除）
+const legacyPath = process.env.DATA_FILE || path.join(__dirname, '..', 'data', 'db.json');
+if (store.isEmpty() && fs.existsSync(legacyPath)) {
+  try {
+    const counts = importLegacyJson(store, JSON.parse(fs.readFileSync(legacyPath, 'utf8')));
+    fs.renameSync(legacyPath, `${legacyPath}.migrated`);
+    console.log(`已將舊的 JSON 資料搬進 SQLite：${JSON.stringify(counts)}；舊檔改名為 ${legacyPath}.migrated`);
+  } catch (err) {
+    console.error(`舊資料搬遷失敗，已整筆回復：${err.message}`);
+    process.exit(1);
+  }
+}
 const { app, authMode, adminService } = createApp({ store });
 
 const server = app.listen(PORT, () => {

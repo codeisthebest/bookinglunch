@@ -24,7 +24,6 @@ const DUMMY = hashPassword('dummy-password');
 
 function createAdminService(store) {
   const failures = new Map(); // username -> { count, until }
-  const accounts = () => store.db.admins;
 
   function publicView(admin) {
     return {
@@ -44,7 +43,7 @@ function createAdminService(store) {
   }
 
   function activeOwnerCount(except) {
-    return Object.values(accounts()).filter((a) => a.active && a.role === 'owner' && a.username !== except).length;
+    return store.admins.all().filter((a) => a.active && a.role === 'owner' && a.username !== except).length;
   }
 
   function create({ username, displayName, role, password }, { skipPasswordPolicy = false } = {}) {
@@ -52,10 +51,10 @@ function createAdminService(store) {
     if (!USERNAME_RE.test(name)) throw new AppError(400, '帳號需為 3–32 字元的小寫英數字、點、底線或連字號');
     if (!ROLES[role]) throw new AppError(400, '角色不正確');
     if (!skipPasswordPolicy) validatePassword(password);
-    if (accounts()[name]) throw new AppError(409, '此帳號已存在');
+    if (store.admins.get(name)) throw new AppError(409, '此帳號已存在');
 
     const { salt, hash } = hashPassword(String(password));
-    accounts()[name] = {
+    const admin = {
       username: name,
       displayName: String(displayName || name).trim() || name,
       role,
@@ -64,13 +63,13 @@ function createAdminService(store) {
       hash,
       createdAt: new Date().toISOString(),
     };
-    store.save();
-    return publicView(accounts()[name]);
+    store.admins.save(admin);
+    return publicView(admin);
   }
 
   // 第一次啟動且沒有任何管理員時，用初始密碼建立 admin（系統管理員）
   function ensureBootstrap(initialPassword) {
-    if (Object.keys(accounts()).length > 0) return false;
+    if (store.admins.count() > 0) return false;
     create(
       { username: 'admin', displayName: '初始管理員', role: 'owner', password: initialPassword },
       { skipPasswordPolicy: true },
@@ -85,7 +84,7 @@ function createAdminService(store) {
       throw new AppError(429, '嘗試次數過多，請 15 分鐘後再試');
     }
 
-    const admin = accounts()[name];
+    const admin = store.admins.get(name);
     const ok = verifyPassword(String(password || ''), admin || DUMMY) && admin && admin.active;
     if (!ok) {
       const lockExpired = failure && failure.until > 0 && failure.until <= Date.now();
@@ -98,19 +97,17 @@ function createAdminService(store) {
   }
 
   function getActive(username) {
-    const admin = accounts()[username];
+    const admin = store.admins.get(username);
     return admin && admin.active ? admin : null;
   }
 
   function list() {
-    return Object.values(accounts())
-      .sort((a, b) => a.username.localeCompare(b.username))
-      .map(publicView);
+    return store.admins.all().map(publicView);
   }
 
   // 回傳 { admin, revokeSessions }：改密碼或停用時，呼叫端要作廢該帳號既有的登入
   function update(username, patch, actor) {
-    const admin = accounts()[username];
+    const admin = store.admins.get(username);
     if (!admin) throw new AppError(404, '找不到此管理員帳號');
 
     const isSelf = username === actor;
@@ -141,23 +138,23 @@ function createAdminService(store) {
       failures.delete(username);
       revokeSessions = true;
     }
-    store.save();
+    store.admins.save(admin);
     return { admin: publicView(admin), revokeSessions };
   }
 
   function changeOwnPassword(username, oldPassword, newPassword) {
-    const admin = accounts()[username];
+    const admin = store.admins.get(username);
     if (!admin || !verifyPassword(String(oldPassword || ''), admin)) {
       throw new AppError(403, '目前的密碼不正確');
     }
     validatePassword(newPassword);
     Object.assign(admin, hashPassword(newPassword));
-    store.save();
+    store.admins.save(admin);
   }
 
   // 還在使用預設的 admin / admin 時提醒（正式環境應立刻更換）
   function hasDefaultCredential() {
-    const admin = accounts().admin;
+    const admin = store.admins.get('admin');
     return Boolean(admin && admin.active && verifyPassword('admin', admin));
   }
 

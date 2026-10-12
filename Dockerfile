@@ -3,6 +3,7 @@ FROM node:22-alpine
 
 ENV NODE_ENV=production \
     PORT=3000 \
+    DB_FILE=/data/bookinglunch.db \
     DATA_FILE=/data/db.json
 
 WORKDIR /app
@@ -25,4 +26,5 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-CMD ["node", "src/server.js"]
+# node:sqlite 在 Node 22 仍標示為實驗性功能，關閉啟動時的警告訊息
+CMD ["node", "--disable-warning=ExperimentalWarning", "src/server.js"]

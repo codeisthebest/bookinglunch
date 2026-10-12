@@ -1,5 +1,5 @@
 // 產生展示用資料：30 位假員工、當日午晚餐菜單（60／70／80 元）。
-// 用法：node scripts/seed.js   （會覆寫 data/db.json，請勿在正式資料上執行）
+// 用法：node scripts/seed.js   （會清空資料庫 data/bookinglunch.db 再重建，請勿在正式資料上執行）
 
 const path = require('node:path');
 const { createStore } = require('../src/store');
@@ -8,7 +8,7 @@ const { createAdminService } = require('../src/admins');
 const { createKioskService } = require('../src/kiosks');
 const { taipeiNow } = require('../src/time');
 
-const store = createStore(process.env.DATA_FILE || path.join(__dirname, '..', 'data', 'db.json'));
+const store = createStore(process.env.DB_FILE || path.join(__dirname, '..', 'data', 'bookinglunch.db'));
 store.reset();
 const service = createService(store);
 
@@ -51,4 +51,4 @@ for (let d = 1; d <= daysInMonth; d += 1) {
 }
 
 console.log(`展示取餐口裝置：KIOSK-01（金鑰 kiosk-key-demo-0001）`);
-console.log(`已產生 30 位員工與 ${year}-${String(month).padStart(2, '0')} 月 ${menuDays} 個平日的菜單（資料檔：${process.env.DATA_FILE || 'data/db.json'}）`);
+console.log(`已產生 30 位員工與 ${year}-${String(month).padStart(2, '0')} 月 ${menuDays} 個平日的菜單（資料庫：${store.filename}）`);

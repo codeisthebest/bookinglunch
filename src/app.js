@@ -529,7 +529,9 @@ function createApp({ store, adminPassword = process.env.ADMIN_PASSWORD || 'admin
 
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => {
-    if (err instanceof AppError) return res.status(err.status).json({ error: err.message });
+    if (err instanceof AppError) {
+      return res.status(err.status).json(err.details === undefined ? { error: err.message } : { error: err.message, details: err.details });
+    }
     if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'JSON 格式錯誤' });
     console.error(err);
     return res.status(500).json({ error: '伺服器錯誤' });
